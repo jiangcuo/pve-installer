@@ -6,6 +6,7 @@ use warnings;
 use Cwd 'abs_path';
 use Encode;
 use POSIX ":sys_wait_h";
+use POSIX qw(EINTR EEXIST EOPNOTSUPP);
 
 use Proxmox::Install::ISOEnv;
 use Proxmox::Install::RunEnv;
@@ -56,6 +57,13 @@ sub reset_last_display_change {
     $last_display_change = 0;
 }
 
+my $host_arch;
+sub get_host_arch {
+    $host_arch = (POSIX::uname())[4] if !$host_arch;
+    return $host_arch;
+}
+my $arch = get_host_arch();
+
 sub display_info {
     my $min_display_time = 15;
 
@@ -93,6 +101,7 @@ my $fssetup = {
         root_mountopt => '',
     },
 };
+
 
 sub create_filesystem {
     my ($dev, $name, $type, $start, $end, $fs, $fe) = @_;
@@ -646,30 +655,43 @@ sub prepare_proxmox_boot_esp {
 sub prepare_grub_efi_boot_esp {
     my ($dev, $espdev, $targetdir) = @_;
 
-    syscmd("mount -n $espdev -t vfat $targetdir/boot/efi") == 0
-        || die "unable to mount $espdev\n";
-
+    syscmd("mount -n $espdev -t vfat $targetdir/boot/efi") == 0 ||
+	die "unable to mount $espdev\n";
+    my $arch = get_host_arch();
+    my $rc;
     eval {
-        my $rc = syscmd(
-            "chroot $targetdir /usr/sbin/grub-install --target x86_64-efi --no-floppy --bootloader-id='proxmox' $dev"
-        );
-        if ($rc != 0) {
-            my $run_env = Proxmox::Install::RunEnv::get();
-            if ($run_env->{boot_type} eq 'efi') {
-                die "unable to install the EFI boot loader on '$dev'\n";
-            } else {
-                warn
-                    "unable to install the EFI boot loader on '$dev', ignoring (not booted using UEFI)\n";
-            }
+	if ($arch eq "aarch64"){
+		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target arm64-efi --no-floppy --bootloader-id='proxmox' $dev");
+	} elsif ($arch eq "loongarch64"){
+		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target loongarch64-efi --no-floppy --bootloader-id='proxmox' $dev");
+	} elsif ($arch eq "riscv64"){
+		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='proxmox' $dev");
+	} else {
+		die "unable to install grub on arch $arch\n";
+	}
+	if ($rc != 0) {
+	    my $run_env = Proxmox::Install::RunEnv::get();
+	    if ($run_env->{boot_type} eq 'efi') {
+		die "unable to install the EFI boot loader on '$dev'\n";
+	    } else {
+		warn "unable to install the EFI boot loader on '$dev', ignoring (not booted using UEFI)\n";
+	    }
+	}
+	# also install fallback boot file (OVMF does not boot without)
+	mkdir("$targetdir/boot/efi/EFI/BOOT");
+	syscmd("cp -r $targetdir/boot/efi/EFI/proxmox/* $targetdir/boot/efi/EFI/boot/");
+	if ($arch eq "aarch64"){
+		syscmd("cp $targetdir/boot/efi/EFI/boot/grubaa64.efi $targetdir/boot/efi/EFI/boot/bootaa64.efi ") == 0  ||
+	    die "unable to copy efi boot loader\n";
+	} elsif ($arch eq "loongarch64") { 
+		syscmd("cp $targetdir/boot/efi/EFI/boot/grubloongarch64.efi $targetdir/boot/efi/EFI/boot/bootloongarch64.efi") == 0  ||
+            die "unable to copy efi boot loader\n";
+	} elsif ($arch eq "riscv64") {
+		syscmd("cp $targetdir/boot/efi/EFI/boot/grubriscv64.efi $targetdir/boot/efi/EFI/boot/bootriscv64.efi") == 0  ||
+            die "unable to copy efi boot loader\n";
+	}  else {
+                die "unable to opy efi boot loader on arch $arch\n";
         }
-        # also install fallback boot file (OVMF does not boot without)
-        mkdir("$targetdir/boot/efi/EFI/BOOT");
-        syscmd("cp $targetdir/boot/efi/EFI/proxmox/*.efi $targetdir/boot/efi/EFI/BOOT/") == 0
-            || die "unable to copy efi boot loader\n";
-        syscmd(
-            "mv $targetdir/boot/efi/EFI/BOOT/shimx64.efi $targetdir/boot/efi/EFI/BOOT/BOOTx64.efi")
-            == 0
-            || die "unable to setup default efi boot loader\n";
     };
     my $err = $@;
 
