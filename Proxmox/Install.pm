@@ -686,17 +686,17 @@ sub prepare_grub_efi_boot_esp {
 
 	# also install fallback boot file (OVMF does not boot without)
 	mkdir("$targetdir/boot/efi/EFI/BOOT");
-	syscmd("cp -r $targetdir/boot/efi/EFI/proxmox/* $targetdir/boot/efi/EFI/BOOT/");
+	syscmd("cp -r $targetdir/boot/efi/EFI/proxmox/* $targetdir/boot/efi/EFI/boot/");
 	if ($arch eq "aarch64"){
-		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubaa64.efi $targetdir/boot/efi/EFI/BOOT/BOOTAA64.EFI ") == 0  ||
+		syscmd("cp $targetdir/boot/efi/EFI/boot/grubaa64.efi $targetdir/boot/efi/EFI/boot/bootaa64.efi ") == 0  ||
 	    die "unable to copy efi boot loader\n";
 	} elsif ($arch eq "loongarch64") { 
-		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubloongarch64.efi $targetdir/boot/efi/EFI/BOOT/BOOTLOONGARCH64.efi") == 0  ||
+		syscmd("cp $targetdir/boot/efi/EFI/boot/grubloongarch64.efi $targetdir/boot/efi/EFI/boot/bootloongarch64.efi") == 0  ||
             die "unable to copy efi boot loader\n";
 	} elsif ($arch eq "riscv64") {
-		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubriscv64.efi $targetdir/boot/efi/EFI/BOOT/BOOTRISCV64.efi") == 0  ||
+		syscmd("cp $targetdir/boot/efi/EFI/boot/grubriscv64.efi $targetdir/boot/efi/EFI/boot/bootriscv64.efi") == 0  ||
             die "unable to copy efi boot loader\n";
-	}  else {
+	} else {
                 die "unable to opy efi boot loader on arch $arch\n";
         }
     };
