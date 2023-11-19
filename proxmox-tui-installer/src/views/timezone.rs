@@ -5,10 +5,10 @@ use cursive::{
 };
 
 use super::FormView;
-use crate::{
+use crate::{system, InstallerState};
+use proxmox_installer_common::{
     options::TimezoneOptions,
     setup::{KeyboardMapping, LocaleInfo},
-    system, InstallerState,
 };
 
 pub struct TimezoneOptionsView {

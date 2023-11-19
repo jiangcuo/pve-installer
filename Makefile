@@ -43,7 +43,9 @@ $(BUILDDIR):
 	  proxinstall \
 	  proxmox-low-level-installer \
 	  proxmox-tui-installer/ \
+	  proxmox-installer-common/ \
 	  spice-vdagent.sh \
+	  test/ \
 	  unconfigured.sh \
 	  xinitrc \
 	  $@.tmp
@@ -75,7 +77,9 @@ $(DSC): $(BUILDDIR)
 sbuild: $(DSC)
 	sbuild $(DSC)
 
+.PHONY: test
 test:
+	$(MAKE) -C test check
 	$(CARGO) test --workspace $(CARGO_BUILD_ARGS)
 
 DESTDIR=
@@ -135,18 +139,23 @@ cd-info.test:
 
 check-pve: prepare-check-env test.img
 	rm -f cd-info.test; $(MAKE) cd-info.test
-	./proxmox-low-level-installer dump-env -t
+	./proxmox-low-level-installer dump-env -t test.img
 	G_SLICE=always-malloc perl -I testdir/usr/share/perl5 testdir/usr/bin/proxinstall -t test.img
 
 check-pve-multidisks: prepare-check-env test.img test2.img test3.img test4.img test5.big.img
 	rm -f cd-info.test; $(MAKE) cd-info.test
-	./proxmox-low-level-installer dump-env -t
+	./proxmox-low-level-installer dump-env -t test.img,test2.img,test3.img,test4.img,test5.big.img
 	G_SLICE=always-malloc perl -I testdir/usr/share/perl5 testdir/usr/bin/proxinstall -t test.img,test2.img,test3.img,test4.img,test5.big.img
 
 check-pve-tui: prepare-check-env test.img
 	rm -f cd-info.test; $(MAKE) cd-info.test
-	./proxmox-low-level-installer dump-env -t
-	testdir/usr/bin/proxmox-tui-installer -t test.img
+	./proxmox-low-level-installer dump-env -t test.img
+	testdir/usr/bin/proxmox-tui-installer -t test.img 2>testdir/run/stderr
+
+check-pve-tui-multidisks: prepare-check-env test.img test2.img test3.img test4.img test5.big.img
+	rm -f cd-info.test; $(MAKE) cd-info.test
+	./proxmox-low-level-installer dump-env -t test.img,test2.img,test3.img,test4.img,test5.big.img
+	testdir/usr/bin/proxmox-tui-installer -t test.img,test2.img,test3.img,test4.img,test5.big.img
 
 prepare-check-pmg: prepare-check-env test.img
 	rm -f cd-info.test; $(MAKE) \
@@ -154,13 +163,13 @@ prepare-check-pmg: prepare-check-env test.img
 	    PRODUCTLONG="Proxmox Mail Gateway" \
 	    ISONAME='proxmox-mail-gateway' \
 	    cd-info.test
-	./proxmox-low-level-installer dump-env -t
+	./proxmox-low-level-installer dump-env -t test.img
 
 check-pmg: prepare-check-pmg
 	G_SLICE=always-malloc perl -I testdir/usr/share/perl5 testdir/usr/bin/proxinstall -t test.img
 
 check-pmg-tui: prepare-check-pmg
-	testdir/usr/bin/proxmox-tui-installer -t test.img
+	testdir/usr/bin/proxmox-tui-installer -t test.img 2>testdir/run/stderr
 
 prepare-check-pbs: prepare-check-env test.img
 	rm -f cd-info.test; $(MAKE) \
@@ -168,13 +177,13 @@ prepare-check-pbs: prepare-check-env test.img
 	    PRODUCTLONG='Proxmox Backup Server' \
 	    ISONAME='proxmox-backup-server' \
 	    cd-info.test
-	./proxmox-low-level-installer dump-env -t
+	./proxmox-low-level-installer dump-env -t test.img
 
 check-pbs: prepare-check-pbs
 	G_SLICE=always-malloc perl -I testdir/usr/share/perl5 testdir/usr/bin/proxinstall -t test.img
 
 check-pbs-tui: prepare-check-pbs
-	testdir/usr/bin/proxmox-tui-installer -t test.img
+	testdir/usr/bin/proxmox-tui-installer -t test.img 2>testdir/run/stderr
 
 .phony: clean
 clean:

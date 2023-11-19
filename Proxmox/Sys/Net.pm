@@ -6,6 +6,9 @@ use warnings;
 use base qw(Exporter);
 our @EXPORT_OK = qw(parse_ip_address parse_ip_mask);
 
+our $HOSTNAME_RE = "(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]*[a-zA-Z0-9])?)";
+our $FQDN_RE = "(?:${HOSTNAME_RE}\.)*${HOSTNAME_RE}";
+
 my $IPV4OCTET = "(?:25[0-5]|(?:2[0-4]|1[0-9]|[1-9])?[0-9])";
 my $IPV4RE = "(?:(?:$IPV4OCTET\\.){3}$IPV4OCTET)";
 my $IPV6H16 = "(?:[0-9a-fA-F]{1,4})";
@@ -184,6 +187,31 @@ sub get_ip_config {
 	dnsserver => $dnsserver,
 	domain => $domain,
     }
+}
+
+# Tries to detect the FQDN hostname for this system via DHCP, if available.
+#
+# DHCP server can set option 12 to inform the client about it's hostname [0]. dhclient dumps all
+# options set by the DHCP server it in lease file, so just read it from there.
+# [0] RFC 2132, section 3.14
+sub get_dhcp_fqdn : prototype() {
+    my $leasefile = '/var/lib/dhcp/dhclient.leases';
+    return if ! -f $leasefile;
+
+    open(my $fh, '<', $leasefile) or return;
+
+    my $name = undef;
+    while (my $line = <$fh>) {
+	# "The name may or may not be qualified with the local domain name"
+	# Thus, only match the first part.
+	if ($line =~ m/^\s+option host-name \"(${FQDN_RE})\";$/) {
+	    $name = $1;
+	    last;
+	}
+    }
+
+    close($fh);
+    return $name if defined($name) && $name =~ m/^([^\.]+)(?:\.(?:\S+))?$/;
 }
 
 1;

@@ -1,3 +1,88 @@
+proxmox-installer (8.1.4) bookworm; urgency=medium
+
+  * tui: fix changing between non-LVM and LVM filesystem in bootdisk chooser
+
+  * ui: stdio: replace newlines with whitespaces in prompt messages
+
+  * tui: install progress: use ok/cancel as button text for installer prompt
+
+  * tui: bootdisk zfs config: add a maximum value to the `copies` option
+
+  * tui: fix interface sort order
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 17 Nov 2023 19:35:19 +0100
+
+proxmox-installer (8.1.3) bookworm; urgency=medium
+
+  * run env: do not store empty hostname when trying to detect from DHCP
+
+  * gtk installer: show the unit of inputs for the disk related options
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 17 Nov 2023 07:39:23 +0100
+
+proxmox-installer (8.1.2) bookworm; urgency=medium
+
+  * x display server: disable screen saver via blank time
+
+  * zfs: create /var/lib/vz only for PVE
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 16 Nov 2023 19:21:09 +0100
+
+proxmox-installer (8.1.1) bookworm; urgency=medium
+
+  * pass optional console parameter from installer to target
+
+  * serial install: fix console parameter parsing
+
+  * fix #4747: pass kernel cmdline parameters to target system
+
+  * fix #1410: zfs: create /var/lib/vz as separate dataset
+
+  * zfs: set acltype=posix for root-dataset to ensure that daemons like
+    journald can provide fine-grained access to non-root users.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 16 Nov 2023 08:33:32 +0100
+
+proxmox-installer (8.1.0) bookworm; urgency=medium
+
+  * various improvements for the TUI installer:
+    - fix #4856: bootdisk: use correct defaults in advanced dialog.
+    - fix incorrect scrolling of form view contents.
+    - don't abort install if minimum memory requirement is not met, allow
+      the user to override this just like in the GTK based installer.
+    - add "Deselect All" button to ZFS and Btrfs multiple disk selection.
+    - improve FQDN validation.
+    - improve bootdisk dialog error handling.
+    - add RAID setup checks for ZFS/Btrfs.
+    - password: include minimum password length in error message.
+    - network: select matching NIC for IP configuration.
+    - setup: fix disk size for 4Kn block devices.
+    - setup: handle missing disk block size gracefully.
+    - update count down of auto-reboot timeout every second like the GTK based
+      installer does.
+    - fix various typos.
+
+  * disk partitioning: fix checking the answer for the to-small-disk prompt.
+
+  * raid setup: btrfs: do not allow legacy BIOS boot on 4Kn disks, like it's
+    already checked for LVM and ZFS.
+
+  * fix #4869: Add marker to the network interfaces that are in an UP-state in
+    the management interface selection.
+
+  * re-use hostname from the runtime environment, if available. For now, this
+    info comes from the DHCP lease only.
+
+  * fix #4829: install: add new ZFS `arc_max` setup option and set the default
+    for Proxmox VE installations via a new heuristic, targetting 10 % of
+    memory, not 50 % and clamp this to minimum 64 MiB and maxmimum 16 GiB.
+    This ensures that most memory is available for virtual guests, the primary
+    use case of Proxmox VE.
+
+  * install correct grub metapackage for the current boot-mode.
+
+ -- Proxmox Support Team <support@proxmox.com>  Sat, 11 Nov 2023 14:31:49 +0100
+
 proxmox-installer (8.0.14) bookworm; urgency=medium
 
   * pmg: disable clamav-clamonacc.service by default on installation

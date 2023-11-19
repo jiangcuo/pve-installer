@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashSet, marker::PhantomData, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 
 use cursive::{
     view::{Nameable, Resizable, ViewWrapper},
@@ -10,42 +10,68 @@ use cursive::{
 };
 
 use super::{DiskSizeEditView, FormView, IntegerEditView};
-use crate::{
-    options::{
-        AdvancedBootdiskOptions, BootdiskOptions, BtrfsBootdiskOptions, BtrfsRaidLevel, Disk,
-        FsType, LvmBootdiskOptions, ZfsBootdiskOptions, ZfsRaidLevel, FS_TYPES,
-        ZFS_CHECKSUM_OPTIONS, ZFS_COMPRESS_OPTIONS,
+use crate::options::FS_TYPES;
+use crate::InstallerState;
+
+use proxmox_installer_common::{
+    disk_checks::{
+        check_btrfs_raid_config, check_disks_4kn_legacy_boot, check_for_duplicate_disks,
+        check_zfs_raid_config,
     },
-    setup::BootType,
+    options::{
+        AdvancedBootdiskOptions, BootdiskOptions, BtrfsBootdiskOptions, Disk, FsType,
+        LvmBootdiskOptions, ZfsBootdiskOptions, ZFS_CHECKSUM_OPTIONS, ZFS_COMPRESS_OPTIONS,
+    },
+    setup::{BootType, ProductConfig, ProxmoxProduct, RuntimeInfo},
 };
-use crate::{setup::ProxmoxProduct, InstallerState};
+
+/// OpenZFS specifies 64 MiB as the absolute minimum:
+/// https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Module%20Parameters.html#zfs-arc-max
+const ZFS_ARC_MIN_SIZE_MIB: usize = 64; // MiB
+
+/// Convience wrapper when needing to take a (interior-mutable) reference to `BootdiskOptions`.
+/// Interior mutability is safe for this case, as it is completely single-threaded.
+pub type BootdiskOptionsRef = Rc<RefCell<BootdiskOptions>>;
 
 pub struct BootdiskOptionsView {
     view: LinearLayout,
-    advanced_options: Rc<RefCell<BootdiskOptions>>,
+    advanced_options: BootdiskOptionsRef,
     boot_type: BootType,
 }
 
 impl BootdiskOptionsView {
-    pub fn new(siv: &mut Cursive, disks: &[Disk], options: &BootdiskOptions) -> Self {
+    pub fn new(siv: &mut Cursive, runinfo: &RuntimeInfo, options: &BootdiskOptions) -> Self {
+        let advanced_options = Rc::new(RefCell::new(options.clone()));
+
         let bootdisk_form = FormView::new()
             .child(
                 "Target harddisk",
-                SelectView::new()
-                    .popup()
-                    .with_all(disks.iter().map(|d| (d.to_string(), d.clone()))),
+                target_bootdisk_selectview(
+                    &runinfo.disks,
+                    advanced_options.clone(),
+                    // At least one disk must always exist to even get to this point,
+                    // see proxmox_installer_common::setup::installer_setup()
+                    &options.disks[0],
+                ),
             )
             .with_name("bootdisk-options-target-disk");
 
-        let advanced_options = Rc::new(RefCell::new(options.clone()));
+        let product_conf = siv
+            .user_data::<InstallerState>()
+            .map(|state| state.setup_info.config.clone())
+            .unwrap(); // Safety: InstallerState must always be set
 
         let advanced_button = LinearLayout::horizontal()
             .child(DummyView.full_width())
             .child(Button::new("Advanced options", {
-                let disks = disks.to_owned();
+                let runinfo = runinfo.clone();
                 let options = advanced_options.clone();
                 move |siv| {
-                    siv.add_layer(advanced_options_view(&disks, options.clone()));
+                    siv.add_layer(advanced_options_view(
+                        &runinfo,
+                        options.clone(),
+                        product_conf.clone(),
+                    ));
                 }
             }));
 
@@ -67,20 +93,10 @@ impl BootdiskOptionsView {
     }
 
     pub fn get_values(&mut self) -> Result<BootdiskOptions, String> {
-        let mut options = (*self.advanced_options).clone().into_inner();
-
-        if [FsType::Ext4, FsType::Xfs].contains(&options.fstype) {
-            let disk = self
-                .view
-                .get_child_mut(0)
-                .and_then(|v| v.downcast_mut::<NamedView<FormView>>())
-                .map(NamedView::<FormView>::get_mut)
-                .and_then(|v| v.get_value::<SelectView<Disk>, _>(0))
-                .ok_or("failed to retrieve bootdisk")?;
-
-            options.disks = vec![disk];
-        }
-
+        // The simple disk selector, as well as the advanced bootdisk dialog save their
+        // info on submit directly to the shared `BootdiskOptionsRef` - so just clone() + return
+        // it.
+        let options = (*self.advanced_options).clone().into_inner();
         check_disks_4kn_legacy_boot(self.boot_type, &options.disks)?;
         Ok(options)
     }
@@ -95,10 +111,14 @@ struct AdvancedBootdiskOptionsView {
 }
 
 impl AdvancedBootdiskOptionsView {
-    fn new(disks: &[Disk], options: &BootdiskOptions) -> Self {
-        let enable_btrfs = crate::setup_info().config.enable_btrfs;
-
-        let filter_btrfs = |fstype: &&FsType| -> bool { enable_btrfs || !fstype.is_btrfs() };
+    fn new(
+        runinfo: &RuntimeInfo,
+        options_ref: BootdiskOptionsRef,
+        product_conf: ProductConfig,
+    ) -> Self {
+        let filter_btrfs =
+            |fstype: &&FsType| -> bool { product_conf.enable_btrfs || !fstype.is_btrfs() };
+        let options = (*options_ref).borrow();
 
         let fstype_select = SelectView::new()
             .popup()
@@ -116,8 +136,10 @@ impl AdvancedBootdiskOptionsView {
                     .unwrap_or_default(),
             )
             .on_submit({
-                let disks = disks.to_owned();
-                move |siv, fstype| Self::fstype_on_submit(siv, &disks, fstype)
+                let options_ref = options_ref.clone();
+                move |siv, fstype| {
+                    Self::fstype_on_submit(siv, fstype, options_ref.clone());
+                }
             });
 
         let mut view = LinearLayout::vertical()
@@ -125,50 +147,86 @@ impl AdvancedBootdiskOptionsView {
             .child(FormView::new().child("Filesystem", fstype_select))
             .child(DummyView.full_width());
 
+        // Create the appropriate (inner) advanced options view
         match &options.advanced {
-            AdvancedBootdiskOptions::Lvm(lvm) => view.add_child(LvmBootdiskOptionsView::new(lvm)),
+            AdvancedBootdiskOptions::Lvm(lvm) => view.add_child(LvmBootdiskOptionsView::new(
+                &options.disks[0],
+                lvm,
+                &product_conf,
+            )),
             AdvancedBootdiskOptions::Zfs(zfs) => {
-                view.add_child(ZfsBootdiskOptionsView::new(disks, zfs))
+                view.add_child(ZfsBootdiskOptionsView::new(runinfo, zfs, &product_conf))
             }
             AdvancedBootdiskOptions::Btrfs(btrfs) => {
-                view.add_child(BtrfsBootdiskOptionsView::new(disks, btrfs))
+                view.add_child(BtrfsBootdiskOptionsView::new(&runinfo.disks, btrfs))
             }
         };
 
         Self { view }
     }
 
-    fn fstype_on_submit(siv: &mut Cursive, disks: &[Disk], fstype: &FsType) {
+    /// Called when a new filesystem type is choosen by the user.
+    /// It first creates the inner (filesystem-specific) options view according to the selected
+    /// filesytem type.
+    /// Further, it replaces the (outer) bootdisk selector in the main dialog, either with a
+    /// selector for LVM configurations or a simple label displaying the chosen RAID for ZFS and
+    /// Btrfs configurations.
+    ///
+    /// # Arguments
+    /// * `siv` - Cursive instance
+    /// * `fstype` - The chosen filesystem type by the user, for which the UI should be
+    ///              updated accordingly
+    /// * `options_ref` - [`BootdiskOptionsRef`] where advanced disk options should be saved to
+    fn fstype_on_submit(siv: &mut Cursive, fstype: &FsType, options_ref: BootdiskOptionsRef) {
+        let state = siv.user_data::<InstallerState>().unwrap();
+        let runinfo = state.runtime_info.clone();
+        let product_conf = state.setup_info.config.clone();
+
+        // Only used for LVM configurations, ZFS and Btrfs do not use the target disk selector
+        // Must be done here, as we cannot mutable borrow `siv` a second time inside the closure
+        // below.
+        let selected_lvm_disk = siv
+            .find_name::<FormView>("bootdisk-options-target-disk")
+            .and_then(|v| v.get_value::<SelectView<Disk>, _>(0))
+            // If not defined, then the view was switched from a non-LVM filesystem to a LVM one.
+            // Just use the first disk is such a case.
+            .unwrap_or_else(|| runinfo.disks[0].clone());
+
+        // Update the (inner) options view
         siv.call_on_name("advanced-bootdisk-options-dialog", |view: &mut Dialog| {
             if let Some(AdvancedBootdiskOptionsView { view }) =
                 view.get_content_mut().downcast_mut()
             {
                 view.remove_child(3);
                 match fstype {
-                    FsType::Ext4 | FsType::Xfs => view.add_child(LvmBootdiskOptionsView::new(
-                        &LvmBootdiskOptions::defaults_from(&disks[0]),
+                    FsType::Ext4 | FsType::Xfs => {
+                        view.add_child(LvmBootdiskOptionsView::new_with_defaults(
+                            &selected_lvm_disk,
+                            &product_conf,
+                        ));
+                    }
+                    FsType::Zfs(_) => view.add_child(ZfsBootdiskOptionsView::new_with_defaults(
+                        &runinfo,
+                        &product_conf,
                     )),
-                    FsType::Zfs(_) => view.add_child(ZfsBootdiskOptionsView::new(
-                        disks,
-                        &ZfsBootdiskOptions::defaults_from(disks),
-                    )),
-                    FsType::Btrfs(_) => view.add_child(BtrfsBootdiskOptionsView::new(
-                        disks,
-                        &BtrfsBootdiskOptions::defaults_from(disks),
-                    )),
+                    FsType::Btrfs(_) => {
+                        view.add_child(BtrfsBootdiskOptionsView::new_with_defaults(&runinfo.disks))
+                    }
                 }
             }
         });
 
+        // The "bootdisk-options-target-disk" view might be either a `SelectView` (if ext4 of XFS
+        // is used) or a label containing the filesytem/RAID type (for ZFS and Btrfs).
+        // Now, unconditionally replace it with the appropriate type of these two, depending on the
+        // newly selected filesystem type.
         siv.call_on_name(
             "bootdisk-options-target-disk",
-            |view: &mut FormView| match fstype {
+            move |view: &mut FormView| match fstype {
                 FsType::Ext4 | FsType::Xfs => {
                     view.replace_child(
                         0,
-                        SelectView::new()
-                            .popup()
-                            .with_all(disks.iter().map(|d| (d.to_string(), d.clone()))),
+                        target_bootdisk_selectview(&runinfo.disks, options_ref, &selected_lvm_disk),
                     );
                 }
                 other => view.replace_child(0, TextView::new(other.to_string())),
@@ -190,15 +248,14 @@ impl AdvancedBootdiskOptionsView {
             .ok_or("Failed to retrieve advanced bootdisk options view".to_owned())?;
 
         if let Some(view) = advanced.downcast_mut::<LvmBootdiskOptionsView>() {
-            let advanced = view
+            let (disk, advanced) = view
                 .get_values()
-                .map(AdvancedBootdiskOptions::Lvm)
                 .ok_or("Failed to retrieve advanced bootdisk options")?;
 
             Ok(BootdiskOptions {
-                disks: vec![],
+                disks: vec![disk],
                 fstype,
-                advanced,
+                advanced: AdvancedBootdiskOptions::Lvm(advanced),
             })
         } else if let Some(view) = advanced.downcast_mut::<ZfsBootdiskOptionsView>() {
             let (disks, advanced) = view
@@ -240,12 +297,14 @@ impl ViewWrapper for AdvancedBootdiskOptionsView {
 
 struct LvmBootdiskOptionsView {
     view: FormView,
+    disk: Disk,
+    has_extra_fields: bool,
 }
 
 impl LvmBootdiskOptionsView {
-    fn new(options: &LvmBootdiskOptions) -> Self {
-        let is_pve = crate::setup_info().config.product == ProxmoxProduct::PVE;
-        // TODO: Set maximum accordingly to disk size
+    fn new(disk: &Disk, options: &LvmBootdiskOptions, product_conf: &ProductConfig) -> Self {
+        let show_extra_fields = product_conf.product == ProxmoxProduct::PVE;
+
         let view = FormView::new()
             .child(
                 "Total size",
@@ -258,12 +317,12 @@ impl LvmBootdiskOptionsView {
                 DiskSizeEditView::new_emptyable().content_maybe(options.swap_size),
             )
             .child_conditional(
-                is_pve,
+                show_extra_fields,
                 "Maximum root volume size",
                 DiskSizeEditView::new_emptyable().content_maybe(options.max_root_size),
             )
             .child_conditional(
-                is_pve,
+                show_extra_fields,
                 "Maximum data volume size",
                 DiskSizeEditView::new_emptyable().content_maybe(options.max_data_size),
             )
@@ -272,29 +331,39 @@ impl LvmBootdiskOptionsView {
                 DiskSizeEditView::new_emptyable().content_maybe(options.min_lvm_free),
             );
 
-        Self { view }
+        Self {
+            view,
+            disk: disk.clone(),
+            has_extra_fields: show_extra_fields,
+        }
     }
 
-    fn get_values(&mut self) -> Option<LvmBootdiskOptions> {
-        let is_pve = crate::setup_info().config.product == ProxmoxProduct::PVE;
-        let min_lvm_free_id = if is_pve { 4 } else { 2 };
-        let max_root_size = if is_pve {
-            self.view.get_value::<DiskSizeEditView, _>(2)
-        } else {
-            None
-        };
-        let max_data_size = if is_pve {
-            self.view.get_value::<DiskSizeEditView, _>(3)
-        } else {
-            None
-        };
-        Some(LvmBootdiskOptions {
-            total_size: self.view.get_value::<DiskSizeEditView, _>(0)?,
-            swap_size: self.view.get_value::<DiskSizeEditView, _>(1),
-            max_root_size,
-            max_data_size,
-            min_lvm_free: self.view.get_value::<DiskSizeEditView, _>(min_lvm_free_id),
-        })
+    fn new_with_defaults(disk: &Disk, product_conf: &ProductConfig) -> Self {
+        Self::new(disk, &LvmBootdiskOptions::defaults_from(disk), product_conf)
+    }
+
+    fn get_values(&mut self) -> Option<(Disk, LvmBootdiskOptions)> {
+        let min_lvm_free_id = if self.has_extra_fields { 4 } else { 2 };
+
+        let max_root_size = self
+            .has_extra_fields
+            .then(|| self.view.get_value::<DiskSizeEditView, _>(2))
+            .flatten();
+        let max_data_size = self
+            .has_extra_fields
+            .then(|| self.view.get_value::<DiskSizeEditView, _>(3))
+            .flatten();
+
+        Some((
+            self.disk.clone(),
+            LvmBootdiskOptions {
+                total_size: self.view.get_value::<DiskSizeEditView, _>(0)?,
+                swap_size: self.view.get_value::<DiskSizeEditView, _>(1),
+                max_root_size,
+                max_data_size,
+                min_lvm_free: self.view.get_value::<DiskSizeEditView, _>(min_lvm_free_id),
+            },
+        ))
     }
 }
 
@@ -462,6 +531,10 @@ impl BtrfsBootdiskOptionsView {
         Self { view }
     }
 
+    fn new_with_defaults(disks: &[Disk]) -> Self {
+        Self::new(disks, &BtrfsBootdiskOptions::defaults_from(disks))
+    }
+
     fn get_values(&mut self) -> Option<(Vec<Disk>, BtrfsBootdiskOptions)> {
         let (disks, selected_disks) = self.view.get_disks_and_selection()?;
         let disk_size = self.view.inner_mut()?.get_value::<DiskSizeEditView, _>(0)?;
@@ -486,7 +559,13 @@ struct ZfsBootdiskOptionsView {
 
 impl ZfsBootdiskOptionsView {
     // TODO: Re-apply previous disk selection from `options` correctly
-    fn new(disks: &[Disk], options: &ZfsBootdiskOptions) -> Self {
+    fn new(
+        runinfo: &RuntimeInfo,
+        options: &ZfsBootdiskOptions,
+        product_conf: &ProductConfig,
+    ) -> Self {
+        let is_pve = product_conf.product == ProxmoxProduct::PVE;
+
         let inner = FormView::new()
             .child("ashift", IntegerEditView::new().content(options.ashift))
             .child(
@@ -513,10 +592,17 @@ impl ZfsBootdiskOptionsView {
                             .unwrap_or_default(),
                     ),
             )
-            .child("copies", IntegerEditView::new().content(options.copies))
+            .child("copies", IntegerEditView::new().content(options.copies).max_value(3))
+            .child_conditional(
+                is_pve,
+                "ARC max size",
+                IntegerEditView::new_with_suffix("MiB")
+                    .max_value(runinfo.total_memory)
+                    .content(options.arc_max),
+            )
             .child("hdsize", DiskSizeEditView::new().content(options.disk_size));
 
-        let view = MultiDiskOptionsView::new(disks, &options.selected_disks, inner)
+        let view = MultiDiskOptionsView::new(&runinfo.disks, &options.selected_disks, inner)
             .top_panel(TextView::new(
                 "ZFS is not compatible with hardware RAID controllers, for details see the documentation."
             ).center());
@@ -524,15 +610,32 @@ impl ZfsBootdiskOptionsView {
         Self { view }
     }
 
+    fn new_with_defaults(runinfo: &RuntimeInfo, product_conf: &ProductConfig) -> Self {
+        Self::new(
+            runinfo,
+            &ZfsBootdiskOptions::defaults_from(runinfo, product_conf),
+            product_conf,
+        )
+    }
+
     fn get_values(&mut self) -> Option<(Vec<Disk>, ZfsBootdiskOptions)> {
         let (disks, selected_disks) = self.view.get_disks_and_selection()?;
         let view = self.view.inner_mut()?;
+        let has_arc_max = view.len() >= 6;
+        let disk_size_index = if has_arc_max { 5 } else { 4 };
 
         let ashift = view.get_value::<IntegerEditView, _>(0)?;
         let compress = view.get_value::<SelectView<_>, _>(1)?;
         let checksum = view.get_value::<SelectView<_>, _>(2)?;
         let copies = view.get_value::<IntegerEditView, _>(3)?;
-        let disk_size = view.get_value::<DiskSizeEditView, _>(4)?;
+        let disk_size = view.get_value::<DiskSizeEditView, _>(disk_size_index)?;
+
+        let arc_max = if has_arc_max {
+            view.get_value::<IntegerEditView, _>(4)?
+                .max(ZFS_ARC_MIN_SIZE_MIB)
+        } else {
+            0 // use built-in ZFS default value
+        };
 
         Some((
             disks,
@@ -541,6 +644,7 @@ impl ZfsBootdiskOptionsView {
                 compress,
                 checksum,
                 copies,
+                arc_max,
                 disk_size,
                 selected_disks,
             },
@@ -552,14 +656,18 @@ impl ViewWrapper for ZfsBootdiskOptionsView {
     cursive::wrap_impl!(self.view: MultiDiskOptionsView<FormView>);
 }
 
-fn advanced_options_view(disks: &[Disk], options: Rc<RefCell<BootdiskOptions>>) -> impl View {
+fn advanced_options_view(
+    runinfo: &RuntimeInfo,
+    options_ref: BootdiskOptionsRef,
+    product_conf: ProductConfig,
+) -> impl View {
     Dialog::around(AdvancedBootdiskOptionsView::new(
-        disks,
-        &(*options).borrow(),
+        runinfo,
+        options_ref.clone(),
+        product_conf,
     ))
     .title("Advanced bootdisk options")
     .button("Ok", {
-        let options_ref = options.clone();
         move |siv| {
             let options = siv
                 .call_on_name("advanced-bootdisk-options-dialog", |view: &mut Dialog| {
@@ -596,235 +704,30 @@ fn advanced_options_view(disks: &[Disk], options: Rc<RefCell<BootdiskOptions>>) 
     .max_size((120, 40))
 }
 
-/// Checks a list of disks for duplicate entries, using their index as key.
+/// Creates a select view for all disks specified.
 ///
 /// # Arguments
 ///
-/// * `disks` - A list of disks to check for duplicates.
-fn check_for_duplicate_disks(disks: &[Disk]) -> Result<(), &Disk> {
-    let mut set = HashSet::new();
+/// * `avail_disks` - Disks that should be shown in the select view
+/// * `options_ref` - [`BootdiskOptionsRef`] where advanced disk options should be saved to
+/// * `selected_disk` - Optional, specifies which disk should be pre-selected
+fn target_bootdisk_selectview(
+    avail_disks: &[Disk],
+    options_ref: BootdiskOptionsRef,
+    selected_disk: &Disk,
+) -> SelectView<Disk> {
+    let selected_disk_pos = avail_disks
+        .iter()
+        .position(|d| d.index == selected_disk.index)
+        .unwrap_or_default();
 
-    for disk in disks {
-        if !set.insert(&disk.index) {
-            return Err(disk);
-        }
-    }
-
-    Ok(())
-}
-
-/// Simple wrapper which returns an descriptive error if the list of disks is too short.
-///
-/// # Arguments
-///
-/// * `disks` - A list of disks to check the lenght of.
-/// * `min` - Minimum number of disks
-fn check_raid_min_disks(disks: &[Disk], min: usize) -> Result<(), String> {
-    if disks.len() < min {
-        Err(format!("Need at least {min} disks"))
-    } else {
-        Ok(())
-    }
-}
-
-/// Checks all disks for legacy BIOS boot compatibility and reports an error as appropriate. 4Kn
-/// disks are generally broken with legacy BIOS and cannot be booted from.
-///
-/// # Arguments
-///
-/// * `runinfo` - `RuntimeInfo` instance of currently running system
-/// * `disks` - List of disks designated as bootdisk targets.
-fn check_disks_4kn_legacy_boot(boot_type: BootType, disks: &[Disk]) -> Result<(), &str> {
-    let is_blocksize_4096 = |disk: &Disk| disk.block_size.map(|s| s == 4096).unwrap_or(false);
-
-    if boot_type == BootType::Bios && disks.iter().any(is_blocksize_4096) {
-        return Err("Booting from 4Kn drive in legacy BIOS mode is not supported.");
-    }
-
-    Ok(())
-}
-
-/// Checks whether a user-supplied ZFS RAID setup is valid or not, such as disk sizes andminimum
-/// number of disks.
-///
-/// # Arguments
-///
-/// * `level` - The targeted ZFS RAID level by the user.
-/// * `disks` - List of disks designated as RAID targets.
-fn check_zfs_raid_config(level: ZfsRaidLevel, disks: &[Disk]) -> Result<(), String> {
-    // See also Proxmox/Install.pm:get_zfs_raid_setup()
-
-    let check_mirror_size = |disk1: &Disk, disk2: &Disk| {
-        if (disk1.size - disk2.size).abs() > disk1.size / 10. {
-            Err(format!(
-                "Mirrored disks must have same size:\n\n  * {disk1}\n  * {disk2}"
-            ))
-        } else {
-            Ok(())
-        }
-    };
-
-    match level {
-        ZfsRaidLevel::Raid0 => check_raid_min_disks(disks, 1)?,
-        ZfsRaidLevel::Raid1 => {
-            check_raid_min_disks(disks, 2)?;
-            for disk in disks {
-                check_mirror_size(&disks[0], disk)?;
-            }
-        }
-        ZfsRaidLevel::Raid10 => {
-            check_raid_min_disks(disks, 4)?;
-            // Pairs need to have the same size
-            for i in (0..disks.len()).step_by(2) {
-                check_mirror_size(&disks[i], &disks[i + 1])?;
-            }
-        }
-        // For RAID-Z: minimum disks number is level + 2
-        ZfsRaidLevel::RaidZ => {
-            check_raid_min_disks(disks, 3)?;
-            for disk in disks {
-                check_mirror_size(&disks[0], disk)?;
-            }
-        }
-        ZfsRaidLevel::RaidZ2 => {
-            check_raid_min_disks(disks, 4)?;
-            for disk in disks {
-                check_mirror_size(&disks[0], disk)?;
-            }
-        }
-        ZfsRaidLevel::RaidZ3 => {
-            check_raid_min_disks(disks, 5)?;
-            for disk in disks {
-                check_mirror_size(&disks[0], disk)?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Checks whether a user-supplied Btrfs RAID setup is valid or not, such as minimum
-/// number of disks.
-///
-/// # Arguments
-///
-/// * `level` - The targeted Btrfs RAID level by the user.
-/// * `disks` - List of disks designated as RAID targets.
-fn check_btrfs_raid_config(level: BtrfsRaidLevel, disks: &[Disk]) -> Result<(), String> {
-    // See also Proxmox/Install.pm:get_btrfs_raid_setup()
-
-    match level {
-        BtrfsRaidLevel::Raid0 => check_raid_min_disks(disks, 1)?,
-        BtrfsRaidLevel::Raid1 => check_raid_min_disks(disks, 2)?,
-        BtrfsRaidLevel::Raid10 => check_raid_min_disks(disks, 4)?,
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn dummy_disk(index: usize) -> Disk {
-        Disk {
-            index: index.to_string(),
-            path: format!("/dev/dummy{index}"),
-            model: Some("Dummy disk".to_owned()),
-            size: 1024. * 1024. * 1024. * 8.,
-            block_size: Some(512),
-        }
-    }
-
-    fn dummy_disks(num: usize) -> Vec<Disk> {
-        (0..num).map(dummy_disk).collect()
-    }
-
-    #[test]
-    fn duplicate_disks() {
-        assert!(check_for_duplicate_disks(&dummy_disks(2)).is_ok());
-        assert_eq!(
-            check_for_duplicate_disks(&[
-                dummy_disk(0),
-                dummy_disk(1),
-                dummy_disk(2),
-                dummy_disk(2),
-                dummy_disk(3),
-            ]),
-            Err(&dummy_disk(2)),
-        );
-    }
-
-    #[test]
-    fn raid_min_disks() {
-        let disks = dummy_disks(10);
-
-        assert!(check_raid_min_disks(&disks[..1], 2).is_err());
-        assert!(check_raid_min_disks(&disks[..1], 1).is_ok());
-        assert!(check_raid_min_disks(&disks, 1).is_ok());
-    }
-
-    #[test]
-    fn bios_boot_compat_4kn() {
-        for i in 0..10 {
-            let mut disks = dummy_disks(10);
-            disks[i].block_size = Some(4096);
-
-            // Must fail if /any/ of the disks are 4Kn
-            assert!(check_disks_4kn_legacy_boot(BootType::Bios, &disks).is_err());
-            // For UEFI, we allow it for every configuration
-            assert!(check_disks_4kn_legacy_boot(BootType::Efi, &disks).is_ok());
-        }
-    }
-
-    #[test]
-    fn btrfs_raid() {
-        let disks = dummy_disks(10);
-
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid0, &[]).is_err());
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid0, &disks[..1]).is_ok());
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid0, &disks).is_ok());
-
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid1, &[]).is_err());
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid1, &disks[..1]).is_err());
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid1, &disks[..2]).is_ok());
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid1, &disks).is_ok());
-
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid10, &[]).is_err());
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid10, &disks[..3]).is_err());
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid10, &disks[..4]).is_ok());
-        assert!(check_btrfs_raid_config(BtrfsRaidLevel::Raid10, &disks).is_ok());
-    }
-
-    #[test]
-    fn zfs_raid() {
-        let disks = dummy_disks(10);
-
-        assert!(check_zfs_raid_config(ZfsRaidLevel::Raid0, &[]).is_err());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::Raid0, &disks[..1]).is_ok());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::Raid0, &disks).is_ok());
-
-        assert!(check_zfs_raid_config(ZfsRaidLevel::Raid1, &[]).is_err());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::Raid1, &disks[..2]).is_ok());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::Raid1, &disks).is_ok());
-
-        assert!(check_zfs_raid_config(ZfsRaidLevel::Raid10, &[]).is_err());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::Raid10, &dummy_disks(4)).is_ok());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::Raid10, &disks).is_ok());
-
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ, &[]).is_err());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ, &disks[..2]).is_err());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ, &disks[..3]).is_ok());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ, &disks).is_ok());
-
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ2, &[]).is_err());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ2, &disks[..3]).is_err());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ2, &disks[..4]).is_ok());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ2, &disks).is_ok());
-
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ3, &[]).is_err());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ3, &disks[..4]).is_err());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ3, &disks[..5]).is_ok());
-        assert!(check_zfs_raid_config(ZfsRaidLevel::RaidZ3, &disks).is_ok());
-    }
+    SelectView::new()
+        .popup()
+        .with_all(avail_disks.iter().map(|d| (d.to_string(), d.clone())))
+        .selected(selected_disk_pos)
+        .on_submit(move |_, disk| {
+            options_ref.borrow_mut().disks = vec![disk.clone()];
+            options_ref.borrow_mut().advanced =
+                AdvancedBootdiskOptions::Lvm(LvmBootdiskOptions::defaults_from(disk));
+        })
 }

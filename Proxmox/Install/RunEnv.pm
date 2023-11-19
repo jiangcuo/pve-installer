@@ -18,6 +18,8 @@ my sub fromjs : prototype($) {
 }
 
 my $mem_total = undef;
+# Returns the system memory size in MiB, and falls back to 512 MiB if it
+# could not be determined.
 sub query_total_memory : prototype() {
     return $mem_total if defined($mem_total);
 
@@ -100,6 +102,7 @@ my sub query_netdevs : prototype() {
 	    index => $index,
 	    name => $name,
 	    mac => $mac,
+	    state => uc($state),
 	};
 	$ifs->{$name}->{addresses} = \@valid_addrs if @valid_addrs;
     }
@@ -263,6 +266,12 @@ sub query_installation_environment : prototype() {
 	routes => $routes,
 	dns => query_dns(),
     };
+
+    # avoid serializing out null or an empty string, that can trip up the UIs
+    if (my $fqdn = Proxmox::Sys::Net::get_dhcp_fqdn()) {
+	$output->{network}->{hostname} = $fqdn;
+    }
+
     # FIXME: move whatever makes sense over to Proxmox::Sys::Net:: and keep that as single source,
     # it can then use some different structure just fine (after adapting the GTK GUI to that) but
     # **never** to (slightly different!) things for the same stuff...
@@ -294,6 +303,50 @@ sub query_installation_environment : prototype() {
     }
 
     return $output;
+}
+
+# OpenZFS specifies 64 MiB as the absolute minimum:
+# https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Module%20Parameters.html#zfs-arc-max
+our $ZFS_ARC_MIN_SIZE_MIB = 64; # MiB
+
+# See https://bugzilla.proxmox.com/show_bug.cgi?id=4829
+our $ZFS_ARC_MAX_SIZE_MIB = 16 * 1024; # 16384 MiB = 16 GiB
+our $ZFS_ARC_SYSMEM_PERCENTAGE = 0.1; # use 10% of available system memory by default
+
+# Calculates the default upper limit for the ZFS ARC size.
+# Returns the default ZFS maximum ARC size in MiB.
+sub default_zfs_arc_max {
+    # Use ZFS default on non-PVE
+    return 0 if Proxmox::Install::ISOEnv::get('product') ne 'pve';
+
+    my $default_mib = get('total_memory') * $ZFS_ARC_SYSMEM_PERCENTAGE;
+    my $rounded_mib = int(sprintf('%.0f', $default_mib));
+
+    if ($rounded_mib > $ZFS_ARC_MAX_SIZE_MIB) {
+	return $ZFS_ARC_MAX_SIZE_MIB;
+    } elsif ($rounded_mib < $ZFS_ARC_MIN_SIZE_MIB) {
+	return $ZFS_ARC_MIN_SIZE_MIB;
+    }
+
+    return $rounded_mib;
+}
+
+# Clamps the provided ZFS arc_max value (in MiB) to the accepted bounds. The
+# lower is specified by `$ZFS_ARC_MIN_SIZE_MIB`, the upper by the available system memory.
+# Returns the clamped value in MiB.
+sub clamp_zfs_arc_max {
+    my ($mib) = @_;
+
+    return $mib if $mib == 0;
+
+    my $total_mem_mib = get('total_memory');
+    if ($mib > $total_mem_mib) {
+	return $total_mem_mib;
+    } elsif ($mib < $ZFS_ARC_MIN_SIZE_MIB) {
+	return $ZFS_ARC_MIN_SIZE_MIB;
+    }
+
+    return $mib;
 }
 
 my $_env = undef;

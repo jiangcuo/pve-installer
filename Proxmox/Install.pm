@@ -191,12 +191,14 @@ sub zfs_create_rpool {
 
     syscmd("zfs create $pool_name/ROOT")  == 0 || die "unable to create zfs $pool_name/ROOT volume\n";
 
-    if ($iso_env->{product} eq 'pve') {
-	syscmd("zfs create $pool_name/data")  == 0 || die "unable to create zfs $pool_name/data volume\n";
-    }
-
     syscmd("zfs create $pool_name/ROOT/$root_volume_name")  == 0 ||
 	die "unable to create zfs $pool_name/ROOT/$root_volume_name volume\n";
+
+    if ($iso_env->{product} eq 'pve') {
+	syscmd("zfs create $pool_name/data")  == 0 || die "unable to create zfs $pool_name/data volume\n";
+	syscmd("zfs create -p $pool_name/ROOT/$root_volume_name/var/lib/vz")  == 0 ||
+	    die "unable to create zfs $pool_name/ROOT/$root_volume_name/var/lib/vz volume\n";
+    }
 
     # default to `relatime` on, fast enough for the installer and production
     syscmd("zfs set atime=on relatime=on $pool_name") == 0 || die "unable to set zfs properties\n";
@@ -209,6 +211,8 @@ sub zfs_create_rpool {
 
     $value = $zfs_opts->{copies} // 1;
     syscmd("zfs set copies=$value $pool_name") if defined($value) && $value != 1;
+
+    syscmd("zfs set acltype=posix $pool_name/ROOT/$root_volume_name");
 }
 
 my $get_raid_devlist = sub {
@@ -298,6 +302,19 @@ sub get_zfs_raid_setup {
     }
 
     return ($devlist, $cmd);
+}
+
+# If the maximum ARC size for ZFS was explicitly changed by the user, applies
+# it to the new system by setting the `zfs_arc_max` module parameter in /etc/modprobe.d/zfs.conf
+my sub zfs_setup_module_conf {
+    my ($targetdir) = @_;
+
+    my $arc_max_mib = Proxmox::Install::Config::get_zfs_opt('arc_max');
+    my $arc_max = Proxmox::Install::RunEnv::clamp_zfs_arc_max($arc_max_mib) * 1024 * 1024;
+
+    if ($arc_max > 0) {
+	file_write_all("$targetdir/etc/modprobe.d/zfs.conf", "options zfs zfs_arc_max=$arc_max\n")
+    }
 }
 
 sub get_btrfs_raid_setup {
@@ -1086,6 +1103,12 @@ _EOD
 	    chomp;
 	    my $path = $_;
 	    my ($deb) = $path =~ m/${proxmox_pkgdir}\/(.*\.deb)/;
+
+	    # the grub-pc/grub-efi-amd64 packages (w/o -bin) are the ones actually updating grub
+	    # upon upgrade - and conflict with each other - install the fitting one only
+	    next if ($deb =~ /grub-pc_/ && $run_env->{boot_type} ne 'bios');
+	    next if ($deb =~ /grub-efi-amd64_/ && $run_env->{boot_type} ne 'efi');
+
 	    update_progress($count/$pkg_count, 0.5, 0.75, "extracting $deb");
 	    print STDERR "extracting: $deb\n";
 	    syscmd("chroot $targetdir dpkg $dpkg_opts --force-depends --no-triggers --unpack /tmp/pkg/$deb") == 0
@@ -1162,14 +1185,20 @@ _EOD
 	}
 
 	update_progress(0.8, 0.95, 1, "make system bootable");
+	my $target_cmdline='';
+	if ($target_cmdline = Proxmox::Install::Config::get_target_cmdline()) {
+	    my $target_cmdline_snippet = "GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $target_cmdline\"";
+	    file_write_all("$targetdir/etc/default/grub.d/installer.cfg", $target_cmdline_snippet);
+	}
 
 	if ($use_zfs) {
 	    # add ZFS options while preserving existing kernel cmdline
 	    my $zfs_snippet = "GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX root=ZFS=$zfs_pool_name/ROOT/$zfs_root_volume_name boot=zfs\"";
 	    file_write_all("$targetdir/etc/default/grub.d/zfs.cfg", $zfs_snippet);
 
-	    file_write_all("$targetdir/etc/kernel/cmdline", "root=ZFS=$zfs_pool_name/ROOT/$zfs_root_volume_name boot=zfs\n");
+	    file_write_all("$targetdir/etc/kernel/cmdline", "root=ZFS=$zfs_pool_name/ROOT/$zfs_root_volume_name boot=zfs $target_cmdline\n");
 
+	    zfs_setup_module_conf($targetdir);
 	}
 
 	diversion_remove($targetdir, "/usr/sbin/update-grub");

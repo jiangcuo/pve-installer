@@ -7,6 +7,7 @@ trap "err_reboot" ERR
 parse_cmdline() {
     proxdebug=0
     proxtui=0
+    serial=0
     # shellcheck disable=SC2013 # per word splitting is wanted here
     for par in $(cat /proc/cmdline); do
         case $par in
@@ -15,6 +16,9 @@ parse_cmdline() {
             ;;
             proxtui)
                 proxtui=1
+            ;;
+            console=ttyS*)
+                serial=1
             ;;
         esac
     done;
@@ -211,11 +215,16 @@ setsid /sbin/agetty -a root --noclear tty3 &
 /usr/bin/proxmox-low-level-installer dump-env
 
 if [ $proxtui -ne 0 ]; then
+    if [ "$serial" -ne 0 ]; then
+        echo "Setting terminal size to 80x24 for serial install"
+        stty columns 80 rows 25
+    fi
+
     echo "Starting the TUI installer"
     /usr/bin/proxmox-tui-installer 2>/dev/tty2
 else
     echo "Starting the installer GUI - see tty2 (CTRL+ALT+F2) for any errors..."
-    xinit -- -dpi "$DPI" >/dev/tty2 2>&1
+    xinit -- -dpi "$DPI" -s 0 >/dev/tty2 2>&1
 fi
 
 # just to be sure everything is on disk

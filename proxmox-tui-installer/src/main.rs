@@ -1,24 +1,14 @@
-use std::{
-    collections::HashMap,
-    env,
-    io::{BufRead, BufReader, Write},
-    net::IpAddr,
-    path::PathBuf,
-    str::FromStr,
-    sync::{Arc, Mutex},
-    thread,
-    time::Duration,
-};
+#![forbid(unsafe_code)]
+
+use std::{collections::HashMap, env, net::IpAddr};
 
 use cursive::{
     event::Event,
     theme::{ColorStyle, Effect, PaletteColor, Style},
-    utils::Counter,
     view::{Nameable, Offset, Resizable, ViewWrapper},
     views::{
         Button, Checkbox, Dialog, DummyView, EditView, Layer, LinearLayout, PaddedView, Panel,
-        ProgressBar, ResizedView, ScrollView, SelectView, StackView, TextContent, TextView,
-        ViewRef,
+        ResizedView, ScrollView, SelectView, StackView, TextView, ViewRef,
     },
     Cursive, CursiveRunnable, ScreenId, View, XY,
 };
@@ -26,20 +16,22 @@ use cursive::{
 use regex::Regex;
 
 mod options;
-use options::*;
+use options::InstallerOptions;
+
+use proxmox_installer_common::{
+    options::{BootdiskOptions, NetworkOptions, PasswordOptions, TimezoneOptions},
+    setup::{installer_setup, LocaleInfo, ProxmoxProduct, RuntimeInfo, SetupInfo},
+    utils::Fqdn,
+};
 
 mod setup;
-use setup::{InstallConfig, LocaleInfo, ProxmoxProduct, RuntimeInfo, SetupInfo};
 
 mod system;
 
-mod utils;
-use utils::Fqdn;
-
 mod views;
 use views::{
-    BootdiskOptionsView, CidrAddressEditView, FormView, TableView, TableViewItem,
-    TimezoneOptionsView,
+    BootdiskOptionsView, CidrAddressEditView, FormView, InstallProgressView, TableView,
+    TableViewItem, TimezoneOptionsView,
 };
 
 // TextView::center() seems to garble the first two lines, so fix it manually here.
@@ -49,24 +41,6 @@ const PROXMOX_LOGO: &str = r#"
 | |_) | '__/ _ \ \/ / '_ ` _ \ / _ \ \/ /
 |  __/| | | (_) >  <| | | | | | (_) >  <
 |_|   |_|  \___/_/\_\_| |_| |_|\___/_/\_\ "#;
-
-/// ISO information is available globally.
-static mut SETUP_INFO: Option<SetupInfo> = None;
-
-pub fn setup_info() -> &'static SetupInfo {
-    unsafe { SETUP_INFO.as_ref().unwrap() }
-}
-
-fn init_setup_info(info: SetupInfo) {
-    unsafe {
-        SETUP_INFO = Some(info);
-    }
-}
-
-#[inline]
-pub fn current_product() -> setup::ProxmoxProduct {
-    setup_info().config.product
-}
 
 struct InstallerView {
     view: ResizedView<Dialog>,
@@ -166,7 +140,6 @@ enum InstallerStep {
 #[derive(Clone)]
 struct InstallerState {
     options: InstallerOptions,
-    /// FIXME: Remove:
     setup_info: SetupInfo,
     runtime_info: RuntimeInfo,
     locales: LocaleInfo,
@@ -184,7 +157,7 @@ fn main() {
         _ => cfg!(debug_assertions),
     };
 
-    let (locales, runtime_info) = match installer_setup(in_test_mode) {
+    let (setup_info, locales, runtime_info) = match installer_setup(in_test_mode) {
         Ok(result) => result,
         Err(err) => initial_setup_error(&mut siv, &err),
     };
@@ -197,10 +170,10 @@ fn main() {
             bootdisk: BootdiskOptions::defaults_from(&runtime_info.disks[0]),
             timezone: TimezoneOptions::defaults_from(&runtime_info, &locales),
             password: Default::default(),
-            network: NetworkOptions::from(&runtime_info.network),
+            network: NetworkOptions::defaults_from(&setup_info, &runtime_info.network),
             autoreboot: false,
         },
-        setup_info: setup_info().clone(), // FIXME: REMOVE
+        setup_info,
         runtime_info,
         locales,
         steps: HashMap::new(),
@@ -209,44 +182,6 @@ fn main() {
 
     switch_to_next_screen(&mut siv, InstallerStep::Licence, &license_dialog);
     siv.run();
-}
-
-fn installer_setup(in_test_mode: bool) -> Result<(LocaleInfo, RuntimeInfo), String> {
-    let base_path = if in_test_mode { "./testdir" } else { "/" };
-    let mut path = PathBuf::from(base_path);
-
-    path.push("run");
-    path.push("proxmox-installer");
-
-    let installer_info = {
-        let mut path = path.clone();
-        path.push("iso-info.json");
-
-        setup::read_json(&path).map_err(|err| format!("Failed to retrieve setup info: {err}"))?
-    };
-    init_setup_info(installer_info);
-
-    let locale_info = {
-        let mut path = path.clone();
-        path.push("locales.json");
-
-        setup::read_json(&path).map_err(|err| format!("Failed to retrieve locale info: {err}"))?
-    };
-
-    let mut runtime_info: RuntimeInfo = {
-        let mut path = path.clone();
-        path.push("run-env-info.json");
-
-        setup::read_json(&path)
-            .map_err(|err| format!("Failed to retrieve runtime environment info: {err}"))?
-    };
-
-    runtime_info.disks.sort();
-    if runtime_info.disks.is_empty() {
-        Err("The installer could not find any supported hard disks.".to_owned())
-    } else {
-        Ok((locale_info, runtime_info))
-    }
 }
 
 /// Anything that can be done late in the setup and will not result in fatal errors.
@@ -350,21 +285,23 @@ fn switch_to_prev_screen(siv: &mut Cursive) {
     siv.set_screen(id);
 }
 
-fn yes_no_dialog(
+fn prompt_dialog(
     siv: &mut Cursive,
     title: &str,
     text: &str,
+    yes_text: &str,
     callback_yes: Box<dyn Fn(&mut Cursive)>,
+    no_text: &str,
     callback_no: Box<dyn Fn(&mut Cursive)>,
 ) {
     siv.add_layer(
         Dialog::around(TextView::new(text))
             .title(title)
-            .button("No", move |siv| {
+            .button(no_text, move |siv| {
                 siv.pop_layer();
                 callback_no(siv);
             })
-            .button("Yes", move |siv| {
+            .button(yes_text, move |siv| {
                 siv.pop_layer();
                 callback_yes(siv);
             }),
@@ -376,11 +313,13 @@ fn trigger_abort_install_dialog(siv: &mut Cursive) {
     siv.quit();
 
     #[cfg(not(debug_assertions))]
-    yes_no_dialog(
+    prompt_dialog(
         siv,
         "Abort installation?",
         "Are you sure you want to abort the installation?",
+        "Yes",
         Box::new(Cursive::quit),
+        "No",
         Box::new(|_| {}),
     )
 }
@@ -431,7 +370,7 @@ fn bootdisk_dialog(siv: &mut Cursive) -> InstallerView {
 
     InstallerView::new(
         &state,
-        BootdiskOptionsView::new(siv, &state.runtime_info.disks, &state.options.bootdisk)
+        BootdiskOptionsView::new(siv, &state.runtime_info, &state.options.bootdisk)
             .with_name("bootdisk-options"),
         Box::new(|siv| {
             let options = siv.call_on_name("bootdisk-options", BootdiskOptionsView::get_values);
@@ -487,7 +426,7 @@ fn password_dialog(siv: &mut Cursive) -> InstallerView {
         .child("Root password", EditView::new().secret())
         .child("Confirm root password", EditView::new().secret())
         .child(
-            "Administator email",
+            "Administrator email",
             EditView::new().content(&options.email),
         )
         .with_name("password-options");
@@ -548,21 +487,23 @@ fn password_dialog(siv: &mut Cursive) -> InstallerView {
 fn network_dialog(siv: &mut Cursive) -> InstallerView {
     let state = siv.user_data::<InstallerState>().unwrap();
     let options = &state.options.network;
-    let ifnames = state.runtime_info.network.interfaces.keys();
+    let ifaces = state.runtime_info.network.interfaces.values();
+    let ifnames = ifaces
+        .clone()
+        .map(|iface| (iface.render(), iface.name.clone()));
+    let mut ifaces_selection = SelectView::new().popup().with_all(ifnames.clone());
+
+    // sort first to always have stable view
+    ifaces_selection.sort();
+    let selected = ifaces_selection
+        .iter()
+        .position(|(_label, iface)| *iface == options.ifname)
+        .unwrap_or(ifaces.len() - 1);
+
+    ifaces_selection.set_selection(selected);
 
     let inner = FormView::new()
-        .child(
-            "Management interface",
-            SelectView::new()
-                .popup()
-                .with_all_str(ifnames.clone())
-                .selected(
-                    ifnames
-                        .clone()
-                        .position(|ifname| ifname == &options.ifname)
-                        .unwrap_or_default(),
-                ),
-        )
+        .child("Management interface", ifaces_selection)
         .child(
             "Hostname (FQDN)",
             EditView::new().content(options.fqdn.to_string()),
@@ -725,215 +666,6 @@ fn install_progress_dialog(siv: &mut Cursive) -> InstallerView {
     // Ensure the screen is updated independently of keyboard events and such
     siv.set_autorefresh(true);
 
-    let cb_sink = siv.cb_sink().clone();
-    let state = siv.user_data::<InstallerState>().unwrap();
-    let in_test_mode = state.in_test_mode;
-    let progress_text = TextContent::new("starting the installation ..");
-
-    let progress_task = {
-        let progress_text = progress_text.clone();
-        let options = state.options.clone();
-        move |counter: Counter| {
-            let child = {
-                use std::process::{Command, Stdio};
-
-                let (path, args, envs): (&str, &[&str], Vec<(&str, &str)>) = if in_test_mode {
-                    (
-                        "./proxmox-low-level-installer",
-                        &["-t", "start-session-test"],
-                        vec![("PERL5LIB", ".")],
-                    )
-                } else {
-                    ("proxmox-low-level-installer", &["start-session"], vec![])
-                };
-
-                Command::new(path)
-                    .args(args)
-                    .envs(envs)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .spawn()
-            };
-
-            let mut child = match child {
-                Ok(child) => child,
-                Err(err) => {
-                    let _ = cb_sink.send(Box::new(move |siv| {
-                        siv.add_layer(
-                            Dialog::text(err.to_string())
-                                .title("Error")
-                                .button("Ok", Cursive::quit),
-                        );
-                    }));
-                    return;
-                }
-            };
-
-            let inner = || {
-                let reader = child.stdout.take().map(BufReader::new)?;
-                let mut writer = child.stdin.take()?;
-
-                serde_json::to_writer(&mut writer, &InstallConfig::from(options)).unwrap();
-                writeln!(writer).unwrap();
-
-                let writer = Arc::new(Mutex::new(writer));
-
-                for line in reader.lines() {
-                    let line = match line {
-                        Ok(line) => line,
-                        Err(_) => break,
-                    };
-
-                    let msg = match line.parse::<UiMessage>() {
-                        Ok(msg) => msg,
-                        Err(stray) => {
-                            eprintln!("low-level installer: {stray}");
-                            continue;
-                        }
-                    };
-
-                    match msg {
-                        UiMessage::Info(s) => cb_sink.send(Box::new(|siv| {
-                            siv.add_layer(Dialog::info(s).title("Information"));
-                        })),
-                        UiMessage::Error(s) => cb_sink.send(Box::new(|siv| {
-                            siv.add_layer(Dialog::info(s).title("Error"));
-                        })),
-                        UiMessage::Prompt(s) => cb_sink.send({
-                            let writer = writer.clone();
-                            Box::new(move |siv| {
-                                yes_no_dialog(
-                                    siv,
-                                    "Prompt",
-                                    &s,
-                                    Box::new({
-                                        let writer = writer.clone();
-                                        move |_| {
-                                            if let Ok(mut writer) = writer.lock() {
-                                                let _ = writeln!(writer, "ok");
-                                            }
-                                        }
-                                    }),
-                                    Box::new(move |_| {
-                                        if let Ok(mut writer) = writer.lock() {
-                                            let _ = writeln!(writer);
-                                        }
-                                    }),
-                                );
-                            })
-                        }),
-                        UiMessage::Progress(ratio, s) => {
-                            counter.set(ratio);
-                            progress_text.set_content(s);
-                            Ok(())
-                        }
-                        UiMessage::Finished(success, msg) => {
-                            counter.set(100);
-                            progress_text.set_content(msg.to_owned());
-                            cb_sink.send(Box::new(move |siv| {
-                                let title = if success { "Success" } else { "Failure" };
-
-                                // For rebooting, we just need to quit the installer,
-                                // our caller does the actual reboot.
-                                siv.add_layer(
-                                    Dialog::text(msg)
-                                        .title(title)
-                                        .button("Reboot now", Cursive::quit),
-                                );
-
-                                let autoreboot = siv
-                                    .user_data::<InstallerState>()
-                                    .map(|state| state.options.autoreboot)
-                                    .unwrap_or_default();
-
-                                if autoreboot && success {
-                                    let cb_sink = siv.cb_sink();
-                                    thread::spawn({
-                                        let cb_sink = cb_sink.clone();
-                                        move || {
-                                            thread::sleep(Duration::from_secs(5));
-                                            let _ = cb_sink.send(Box::new(Cursive::quit));
-                                        }
-                                    });
-                                }
-                            }))
-                        }
-                    }
-                    .unwrap();
-                }
-
-                Some(())
-            };
-
-            if inner().is_none() {
-                cb_sink
-                    .send(Box::new(|siv| {
-                        siv.add_layer(
-                            Dialog::text("low-level installer exited early")
-                                .title("Error")
-                                .button("Exit", Cursive::quit),
-                        );
-                    }))
-                    .unwrap();
-            }
-        }
-    };
-
-    let progress_bar = ProgressBar::new().with_task(progress_task).full_width();
-    let inner = PaddedView::lrtb(
-        1,
-        1,
-        1,
-        1,
-        LinearLayout::vertical()
-            .child(PaddedView::lrtb(1, 1, 0, 0, progress_bar))
-            .child(DummyView)
-            .child(TextView::new_with_content(progress_text).center())
-            .child(PaddedView::lrtb(
-                1,
-                1,
-                1,
-                0,
-                LinearLayout::horizontal().child(abort_install_button()),
-            )),
-    );
-
-    InstallerView::with_raw(state, inner)
-}
-
-enum UiMessage {
-    Info(String),
-    Error(String),
-    Prompt(String),
-    Finished(bool, String),
-    Progress(usize, String),
-}
-
-impl FromStr for UiMessage {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (ty, rest) = s.split_once(": ").ok_or("invalid message: no type")?;
-
-        match ty {
-            "message" => Ok(UiMessage::Info(rest.to_owned())),
-            "error" => Ok(UiMessage::Error(rest.to_owned())),
-            "prompt" => Ok(UiMessage::Prompt(rest.to_owned())),
-            "finished" => {
-                let (state, rest) = rest.split_once(", ").ok_or("invalid message: no state")?;
-                Ok(UiMessage::Finished(state == "ok", rest.to_owned()))
-            }
-            "progress" => {
-                let (percent, rest) = rest.split_once(' ').ok_or("invalid progress message")?;
-                Ok(UiMessage::Progress(
-                    percent
-                        .parse::<f64>()
-                        .map(|v| (v * 100.).floor() as usize)
-                        .map_err(|err| err.to_string())?,
-                    rest.to_owned(),
-                ))
-            }
-            unknown => Err(format!("invalid message type {unknown}, rest: {rest}")),
-        }
-    }
+    let state = siv.user_data::<InstallerState>().cloned().unwrap();
+    InstallerView::with_raw(&state, InstallProgressView::new(siv))
 }

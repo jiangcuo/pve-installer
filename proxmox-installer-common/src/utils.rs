@@ -27,13 +27,14 @@ pub enum CidrAddressParseError {
 /// # Examples
 /// ```
 /// use std::net::{Ipv4Addr, Ipv6Addr};
+/// use proxmox_installer_common::utils::CidrAddress;
 /// let ipv4 = CidrAddress::new(Ipv4Addr::new(192, 168, 0, 1), 24).unwrap();
 /// let ipv6 = CidrAddress::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0xc0a8, 1), 32).unwrap();
 ///
 /// assert_eq!(ipv4.to_string(), "192.168.0.1/24");
 /// assert_eq!(ipv6.to_string(), "2001:db8::c0a8:1/32");
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CidrAddress {
     addr: IpAddr,
     mask: usize,
