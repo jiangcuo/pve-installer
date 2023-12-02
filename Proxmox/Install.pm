@@ -16,7 +16,7 @@ use Proxmox::Install::StorageConfig;
 
 use Proxmox::Sys::Block qw(get_cached_disks wipe_disk partition_bootable_disk);
 use Proxmox::Sys::Command qw(run_command syscmd);
-use Proxmox::Sys::File qw(file_read_firstline file_write_all);
+use Proxmox::Sys::File qw(file_read_all file_read_firstline file_write_all);
 use Proxmox::UI;
 
 # TODO: move somewhere better?
@@ -196,8 +196,8 @@ sub zfs_create_rpool {
 
     if ($iso_env->{product} eq 'pve') {
 	syscmd("zfs create $pool_name/data")  == 0 || die "unable to create zfs $pool_name/data volume\n";
-	syscmd("zfs create -p $pool_name/ROOT/$root_volume_name/var/lib/vz")  == 0 ||
-	    die "unable to create zfs $pool_name/ROOT/$root_volume_name/var/lib/vz volume\n";
+	syscmd("zfs create -o mountpoint=/$pool_name/ROOT/$root_volume_name/var/lib/vz $pool_name/var-lib-vz")  == 0 ||
+	    die "unable to create zfs $pool_name/var-lib-vz volume\n";
     }
 
     # default to `relatime` on, fast enough for the installer and production
@@ -579,7 +579,20 @@ my sub chroot_chmod {
 sub prepare_proxmox_boot_esp {
     my ($espdev, $targetdir) = @_;
 
-    syscmd("chroot $targetdir proxmox-boot-tool init $espdev") == 0 ||
+    my $mode = '';
+
+    # detect secure boot being enabled and switch to grub-on-ESP if it is
+    if (-d "/sys/firmware/efi") {
+	my $content = eval { file_read_all("/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c") };
+	if ($@) {
+	    warn "Failed to read secure boot state: $@\n";
+	} else {
+	    my @secureboot = unpack("CCCCC", $content);
+	    $mode = 'grub' if $secureboot[4] == 1;
+	}
+    }
+
+    syscmd("chroot $targetdir proxmox-boot-tool init $espdev $mode") == 0 ||
 	die "unable to init ESP and install proxmox-boot loader on '$espdev'\n";
 }
 
@@ -993,6 +1006,8 @@ sub extract_data {
 	    $ifaces .= "\niface $name $ntype manual\n";
 	}
 
+	$ifaces .= "\n\nsource /etc/network/interfaces.d/*\n";
+
 	file_write_all("$targetdir/etc/network/interfaces", $ifaces);
 
 	# configure dns
@@ -1187,7 +1202,13 @@ _EOD
 	update_progress(0.8, 0.95, 1, "make system bootable");
 	my $target_cmdline='';
 	if ($target_cmdline = Proxmox::Install::Config::get_target_cmdline()) {
-	    my $target_cmdline_snippet = "GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $target_cmdline\"";
+	    my $target_cmdline_snippet = '';
+	    if ($target_cmdline =~ /console=ttyS(\d+),(\d+)/) {
+		$target_cmdline_snippet .= "GRUB_TERMINAL_INPUT=\"console serial\"\n";
+		$target_cmdline_snippet .= "GRUB_TERMINAL_OUTPUT=\"gfxterm serial\"\n";
+		$target_cmdline_snippet .= "GRUB_SERIAL_COMMAND=\"serial --unit=$1 --speed=$2\"\n";
+	    }
+	    $target_cmdline_snippet .= "GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $target_cmdline\"";
 	    file_write_all("$targetdir/etc/default/grub.d/installer.cfg", $target_cmdline_snippet);
 	}
 
@@ -1349,6 +1370,11 @@ _EOD
 
 	syscmd("zfs set mountpoint=/ $zfs_pool_name/ROOT/$zfs_root_volume_name") == 0 ||
 	    die "zfs set mountpoint failed\n";
+
+	if ($iso_env->{product} eq 'pve') {
+	    syscmd("zfs set mountpoint=/var/lib/vz $zfs_pool_name/var-lib-vz") == 0 ||
+		die "zfs set mountpoint for var-lib-vz failed\n";
+	}
 
 	syscmd("zpool set bootfs=$zfs_pool_name/ROOT/$zfs_root_volume_name $zfs_pool_name") == 0 ||
 	    die "zpool set bootfs failed\n";

@@ -1,3 +1,31 @@
+proxmox-installer (8.1.7) bookworm; urgency=medium
+
+  *  source interfaces.d snippets by default
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 23 Nov 2023 11:11:20 +0100
+
+proxmox-installer (8.1.6) bookworm; urgency=medium
+
+  * grub: install all efi binaries in fallback/default dir
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 22 Nov 2023 13:30:06 +0100
+
+proxmox-installer (8.1.5) bookworm; urgency=medium
+
+  * various fixes for the TUI installer:
+   - do not center EULA text
+   - preserve auto-reboot checkbox state when switching views
+   - common: enforce even number of disks for ZFS RAID-10
+
+  * serial installer: add serial config for grub to target system
+
+  * zfs: create dataset var-lib-vz for /var/lib/vz to avoid to many
+    intermediate datasets
+
+  * ZFS: detect and handle secure boot
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 21 Nov 2023 14:22:23 +0100
+
 proxmox-installer (8.1.4) bookworm; urgency=medium
 
   * tui: fix changing between non-LVM and LVM filesystem in bootdisk chooser
