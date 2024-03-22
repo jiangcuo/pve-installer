@@ -78,7 +78,7 @@ sub send_reboot_ui_message {
 	    $secs -= 1;
 	}
     } else {
-	Proxmox::UI::finished(1, "Installation complete - reboot now?");
+	Proxmox::UI::finished(1, "Installation finished - reboot now?");
     }
 }
 
@@ -91,6 +91,7 @@ Proxmox::Log::init("/tmp/install-low-level-${cmd}.log");
 
 my $env = Proxmox::Install::ISOEnv::get();
 if ($cmd eq 'dump-env') {
+    Proxmox::UI::init_stdio({}, $env);
 
     my $out_dir = $env->{locations}->{run};
     make_path($out_dir);

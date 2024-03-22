@@ -117,6 +117,7 @@ pub enum FqdnParseError {
     MissingHostname,
     NumericHostname,
     InvalidPart(String),
+    TooLong(usize),
 }
 
 impl fmt::Display for FqdnParseError {
@@ -129,17 +130,46 @@ impl fmt::Display for FqdnParseError {
                 f,
                 "FQDN must only consist of alphanumeric characters and dashes. Invalid part: '{part}'",
             ),
+            TooLong(len) => write!(f, "FQDN too long: {len} > {}", Fqdn::MAX_LENGTH),
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A type for safely representing fully-qualified domain names (FQDNs).
+///
+/// It considers following RFCs:
+/// https://www.ietf.org/rfc/rfc952.txt (sec. "ASSUMPTIONS", 1.)
+/// https://www.ietf.org/rfc/rfc1035.txt (sec. 2.3. "Conventions")
+/// https://www.ietf.org/rfc/rfc1123.txt (sec. 2.1. "Host Names and Numbers")
+/// https://www.ietf.org/rfc/rfc3492.txt
+/// https://www.ietf.org/rfc/rfc4343.txt
+///
+/// .. and applies some restriction given by Debian, e.g. 253 instead of 255
+/// maximum total length and maximum 63 characters per label.
+/// https://manpages.debian.org/stable/manpages/hostname.7.en.html
+///
+/// Additionally:
+/// - It enforces the restriction as per Bugzilla #1054, in that
+///   purely numeric hostnames are not allowed - against RFC1123 sec. 2.1.
+///
+/// Some terminology:
+/// - "label" - a single part of a FQDN, e.g. <label>.<label>.<tld>
+#[derive(Clone, Debug, Eq)]
 pub struct Fqdn {
     parts: Vec<String>,
 }
 
 impl Fqdn {
+    /// Maximum length of a single label of the FQDN
+    const MAX_LABEL_LENGTH: usize = 63;
+    /// Maximum total length of the FQDN
+    const MAX_LENGTH: usize = 253;
+
     pub fn from(fqdn: &str) -> Result<Self, FqdnParseError> {
+        if fqdn.len() > Self::MAX_LENGTH {
+            return Err(FqdnParseError::TooLong(fqdn.len()));
+        }
+
         let parts = fqdn
             .split('.')
             .map(ToOwned::to_owned)
@@ -154,7 +184,8 @@ impl Fqdn {
         if parts.len() < 2 {
             Err(FqdnParseError::MissingHostname)
         } else if parts[0].chars().all(|c| c.is_ascii_digit()) {
-            // Not allowed/supported on Debian systems.
+            // Do not allow a purely numeric hostname, see:
+            // https://bugzilla.proxmox.com/show_bug.cgi?id=1054
             Err(FqdnParseError::NumericHostname)
         } else {
             Ok(Self { parts })
@@ -182,6 +213,7 @@ impl Fqdn {
 
     fn validate_single(s: &String) -> bool {
         !s.is_empty()
+            && s.len() <= Self::MAX_LABEL_LENGTH
             // First character must be alphanumeric
             && s.chars()
                 .next()
@@ -225,6 +257,21 @@ impl<'de> Deserialize<'de> for Fqdn {
     }
 }
 
+impl PartialEq for Fqdn {
+    // Case-insensitive comparison, as per RFC 952 "ASSUMPTIONS", RFC 1035 sec. 2.3.3. "Character
+    // Case" and RFC 4343 as a whole
+    fn eq(&self, other: &Self) -> bool {
+        if self.parts.len() != other.parts.len() {
+            return false;
+        }
+
+        self.parts
+            .iter()
+            .zip(other.parts.iter())
+            .all(|(a, b)| a.to_lowercase() == b.to_lowercase())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,9 +290,26 @@ mod tests {
         assert_eq!(Fqdn::from("foo.com-"), Err(InvalidPart("com-".to_owned())));
         assert_eq!(Fqdn::from("-o-.com"), Err(InvalidPart("-o-".to_owned())));
 
+        // https://bugzilla.proxmox.com/show_bug.cgi?id=1054
         assert_eq!(Fqdn::from("123.com"), Err(NumericHostname));
         assert!(Fqdn::from("foo123.com").is_ok());
         assert!(Fqdn::from("123foo.com").is_ok());
+
+        assert!(Fqdn::from(&format!("{}.com", "a".repeat(63))).is_ok());
+        assert_eq!(
+            Fqdn::from(&format!("{}.com", "a".repeat(250))),
+            Err(TooLong(254)),
+        );
+        assert_eq!(
+            Fqdn::from(&format!("{}.com", "a".repeat(64))),
+            Err(InvalidPart("a".repeat(64))),
+        );
+
+        // https://bugzilla.proxmox.com/show_bug.cgi?id=5230
+        assert_eq!(
+            Fqdn::from("123@foo.com"),
+            Err(InvalidPart("123@foo".to_owned()))
+        );
     }
 
     #[test]
@@ -265,5 +329,15 @@ mod tests {
             Fqdn::from("foo.example.com").unwrap().to_string(),
             "foo.example.com"
         );
+    }
+
+    #[test]
+    fn fqdn_compare() {
+        assert_eq!(Fqdn::from("example.com"), Fqdn::from("example.com"));
+        assert_eq!(Fqdn::from("example.com"), Fqdn::from("ExAmPle.Com"));
+        assert_eq!(Fqdn::from("ExAmPle.Com"), Fqdn::from("example.com"));
+        assert_ne!(Fqdn::from("subdomain.ExAmPle.Com"), Fqdn::from("example.com"));
+        assert_ne!(Fqdn::from("foo.com"), Fqdn::from("bar.com"));
+        assert_ne!(Fqdn::from("example.com"), Fqdn::from("example.net"));
     }
 }

@@ -130,6 +130,7 @@ sub create_filesystem {
 	} elsif ($line =~ m/Writing superblocks and filesystem.*done/) {
 	    update_progress(1, $rs, $re);
 	}
+	return;
     });
 }
 
@@ -204,7 +205,7 @@ sub zfs_create_rpool {
     syscmd("zfs set atime=on relatime=on $pool_name") == 0 || die "unable to set zfs properties\n";
 
     my $value = $zfs_opts->{compress} // 'on';
-    syscmd("zfs set compression=$value $pool_name") if defined($value) && $value ne 'off';
+    syscmd("zfs set compression=$value $pool_name");
 
     $value = $zfs_opts->{checksum} // 'on';
     syscmd("zfs set checksum=$value $pool_name") if defined($value) && $value ne 'on';
@@ -367,6 +368,7 @@ sub get_pv_list_from_vgname {
 	} else {
 	    $res->{$vg_uuid}->{pvs} .= ", $pv";
 	}
+	return;
     };
     run_command("pvs --noheadings -o pv_name,vg_uuid -S vg_name='$vgname'", $parser, undef, 1);
 
@@ -930,6 +932,7 @@ sub extract_data {
 		my $frac = $per > 100 ? 1 : $per/100;
 		update_progress($frac, $maxper, 0.5);
 	    }
+	    return;
 	});
 
 	syscmd("mount -n -t tmpfs tmpfs $targetdir/tmp") == 0 || die "unable to mount tmpfs on $targetdir/tmp\n";
@@ -1031,6 +1034,7 @@ sub extract_data {
 		if ($line =~ m/^UUID=([A-Fa-f0-9\-]+)$/) {
 		    $fsuuid = $1;
 		}
+		return;
 	    });
 
 	    die "unable to detect FS UUID" if !defined($fsuuid);
@@ -1141,6 +1145,7 @@ _EOD
 	    if ($line =~ m/Setting up\s+(\S+)/) {
 		update_progress((++$count)/$pkg_count, 0.75, 0.95, "configuring $1");
 	    }
+	    return;
 	});
 
 	unlink "$targetdir/etc/mailname";
@@ -1190,7 +1195,7 @@ _EOD
 	    # on-access scanner (blocks file access if it thinks file is bad) needs to be explicit
 	    # configured by the user, otherwise it fails, and it doesn't make sense for most users.
 	    unlink "$targetdir/etc/systemd/system/multi-user.target.wants/clamav-clamonacc.service"
-		or warn "failed to disable clamav-clamonacc.service - $!";
+		or $!{ENOENT} or warn "failed to disable clamav-clamonacc.service - $!\n";
 	}
 
 	if ($iso_env->{product} eq 'pve') {

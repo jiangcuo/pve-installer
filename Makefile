@@ -77,8 +77,15 @@ $(DSC): $(BUILDDIR)
 sbuild: $(DSC)
 	sbuild $(DSC)
 
+.PHONY: prepare-test-env
+prepare-test-env: cd-info.test country.dat test.img
+	rm -rf testdir
+	mkdir -p testdir/var/lib/proxmox-installer/
+	cp -v country.dat testdir/var/lib/proxmox-installer/
+	./proxmox-low-level-installer -t test.img dump-env
+
 .PHONY: test
-test:
+test: prepare-test-env
 	$(MAKE) -C test check
 	$(CARGO) test --workspace $(CARGO_BUILD_ARGS)
 
@@ -97,7 +104,7 @@ install: $(INSTALLER_SOURCES) $(CARGO_COMPILEDIR)/proxmox-tui-installer
 	install -D -m 755 unconfigured.sh $(DESTDIR)/sbin/unconfigured.sh
 	install -D -m 755 proxinstall $(DESTDIR)/usr/bin/proxinstall
 	install -D -m 755 proxmox-low-level-installer $(DESTDIR)/$(BINDIR)/proxmox-low-level-installer
-	$(foreach i,$(USR_BIN), install -m755 $(CARGO_COMPILEDIR)/$(i) $(DESTDIR)$(BINDIR)/)
+	$(foreach i,$(USR_BIN), install -m755 $(CARGO_COMPILEDIR)/$(i) $(DESTDIR)$(BINDIR)/ ;)
 	install -D -m 755 checktime $(DESTDIR)/usr/bin/checktime
 	install -D -m 644 xinitrc $(DESTDIR)/.xinitrc
 	install -D -m 755 spice-vdagent.sh $(DESTDIR)/.spice-vdagent.sh

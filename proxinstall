@@ -281,18 +281,14 @@ sub check_number {
 sub create_text_input {
     my ($default, $text) = @_;
 
-    my $hbox = Gtk3::Box->new('horizontal', 0);
-
     my $label = Gtk3::Label->new($text);
     $label->set_size_request(150, -1);
     $label->set_xalign(1.0);
-    $hbox->pack_start($label, 0, 0, 10);
     my $e1 = Gtk3::Entry->new();
     $e1->set_width_chars(35);
-    $hbox->pack_start($e1, 0, 0, 0);
     $e1->set_text($default);
 
-    return ($hbox, $e1);
+    return ($label, $e1);
 }
 sub create_cidr_inputs {
     my ($cidr) = @_;
@@ -304,42 +300,55 @@ sub create_cidr_inputs {
     my $label = Gtk3::Label->new('IP Address (CIDR)');
     $label->set_size_request(150, -1);
     $label->set_xalign(1.0);
-    $hbox->pack_start($label, 0, 0, 10);
 
     my $ip_el = Gtk3::Entry->new();
     $ip_el->set_width_chars(28);
-    $hbox->pack_start($ip_el, 0, 0, 0);
+    $hbox->pack_start($ip_el, 1, 1, 0);
     $ip_el->set_text($default_ip);
 
-    $label = Gtk3::Label->new('/');
-    $label->set_size_request(10, -1);
-    $hbox->pack_start($label, 0, 0, 2);
+    my $dash_label = Gtk3::Label->new('/');
+    $dash_label->set_size_request(10, -1);
+    $hbox->pack_start($dash_label, 0, 0, 2);
 
     my $cidr_el = Gtk3::Entry->new();
     $cidr_el->set_width_chars(3);
     $hbox->pack_start($cidr_el, 0, 0, 0);
     $cidr_el->set_text($default_mask);
 
-    return ($hbox, $ip_el, $cidr_el);
+    return ($label, $hbox, $ip_el, $cidr_el);
 }
 
 my $ipconf_first_view = 1;
+
+my $create_basic_grid = sub {
+    my $grid =  Gtk3::Grid->new();
+    $grid->set_visible(1);
+    $grid->set_column_spacing(10);
+    $grid->set_row_spacing(10);
+    $grid->set_hexpand(1);
+
+    $grid->set_margin_start(20);
+    $grid->set_margin_end(20);
+    $grid->set_margin_top(10);
+    $grid->set_margin_bottom(10);
+
+    return $grid;
+};
 
 sub create_ipconf_view {
 
     cleanup_view();
     Proxmox::UI::display_html('ipconf.htm');
 
-    my $vcontainer = Gtk3::Box->new('vertical', 0);
-    $gtk_state->{inbox}->pack_start($vcontainer, 1, 0, 0);
-    my $hcontainer =  Gtk3::Box->new('horizontal', 0);
-    $vcontainer->pack_start($hcontainer, 0, 0, 10);
-    my $vbox =  Gtk3::Box->new('vertical', 0);
-    $hcontainer->add($vbox);
+    my $grid = &$create_basic_grid();
+    $grid->set_row_spacing(10);
+    $grid->set_column_spacing(10);
+
+    $gtk_state->{inbox}->pack_start($grid, 0, 0, 0);
 
     my $cidr = Proxmox::Install::Config::get_cidr() // '192.168.100.2/24';
 
-    my ($cidr_box, $ipconf_entry_addr, $ipconf_entry_mask) = create_cidr_inputs($cidr);
+    my ($cidr_label, $cidr_box, $ipconf_entry_addr, $ipconf_entry_mask) = create_cidr_inputs($cidr);
 
     my $device_model = Gtk3::ListStore->new('Glib::String', 'Glib::String');
     my $device_cb = Gtk3::ComboBox->new_with_model($device_model);
@@ -407,37 +416,39 @@ sub create_ipconf_view {
 	$device_cb->set_active(0);
     }
 
-    my $devicebox = Gtk3::Box->new('horizontal', 0);
-    my $label = Gtk3::Label->new("Management Interface:");
+    my $label = Gtk3::Label->new("Management Interface");
     $label->set_size_request(150, -1);
     $label->set_xalign(1.0);
-    $devicebox->pack_start($label, 0, 0, 10);
-    $devicebox->pack_start($device_cb, 0, 0, 0);
 
-    $vbox->pack_start($devicebox, 0, 0, 2);
+    $grid->attach($label, 0, 0, 1, 1);
+    $grid->attach($device_cb, 1, 0, 1, 1);
 
     my $fqdn = Proxmox::Install::Config::get_fqdn();
     my $hostname = $run_env->{network}->{hostname} || $iso_env->{product};
     my $domain = $ipconf->{domain} || "example.invalid";
     $fqdn //= "$hostname.$domain";
 
-    my ($hostbox, $hostentry) = create_text_input($fqdn, 'Hostname (FQDN):');
-    $vbox->pack_start($hostbox, 0, 0, 2);
+    my ($host_label, $hostentry) = create_text_input($fqdn, 'Hostname (FQDN)');
+    $grid->attach($host_label, 0, 1, 1, 1);
+    $grid->attach($hostentry, 1, 1, 1, 1);
 
-    $vbox->pack_start($cidr_box, 0, 0, 2);
+    $grid->attach($cidr_label, 0, 2, 1, 1);
+    $grid->attach($cidr_box, 1, 2, 1, 1);
 
     my $cfg_gateway = Proxmox::Install::Config::get_gateway();
     my $gateway = $cfg_gateway // $ipconf->{gateway} || '192.168.100.1';
 
-    my ($gwbox, $ipconf_entry_gw) = create_text_input($gateway, 'Gateway:');
-    $vbox->pack_start($gwbox, 0, 0, 2);
+    my ($gw_label, $ipconf_entry_gw) = create_text_input($gateway, 'Gateway');
+    $grid->attach($gw_label, 0, 3, 1, 1);
+    $grid->attach($ipconf_entry_gw, 1, 3, 1, 1);
 
     my $cfg_dns = Proxmox::Install::Config::get_dns();
     my $dnsserver = $cfg_dns // $ipconf->{dnsserver} || $gateway;
 
-    my ($dnsbox, $ipconf_entry_dns) = create_text_input($dnsserver, 'DNS Server:');
+    my ($dns_label, $ipconf_entry_dns) = create_text_input($dnsserver, 'DNS Server');
 
-    $vbox->pack_start($dnsbox, 0, 0, 0);
+    $grid->attach($dns_label, 0, 4, 1, 1);
+    $grid->attach($ipconf_entry_dns, 1, 4, 1, 1);
 
     $gtk_state->{inbox}->show_all;
     set_next(undef, sub {
@@ -446,24 +457,16 @@ sub create_ipconf_view {
 	$text =~ s/^\s+//;
 	$text =~ s/\s+$//;
 
-	# Debian does not support purely numeric hostnames
-	if ($text && $text =~ /^[0-9]+(?:\.|$)/) {
-	    Proxmox::UI::message("Purely numeric hostnames are not allowed.");
-	    $hostentry->grab_focus();
-	    return;
-	}
+	my ($hostname, $domainname) = eval { Proxmox::Sys::Net::parse_fqdn($text) };
+	my $err = $@;
 
-	if ($text
-	    && $text =~ m/^${Proxmox::Sys::Net::FQDN_RE}$/
-	    && $text !~ m/.example.invalid$/
-	    && $text =~ m/^([^\.]+)\.(\S+)$/
-	) {
-	    Proxmox::Install::Config::set_hostname($1);
-	    Proxmox::Install::Config::set_domain($2);
-	} else {
-	    Proxmox::UI::message("Hostname does not look like a fully qualified domain name.");
+	if ($err || $text =~ m/.example.invalid$/) {
+	    Proxmox::UI::message($err || 'Hostname does not look like a valid fully qualified domain name');
 	    $hostentry->grab_focus();
 	    return;
+	} else {
+	    Proxmox::Install::Config::set_hostname($hostname);
+	    Proxmox::Install::Config::set_domain($domainname);
 	}
 
 	# verify ip address
@@ -633,12 +636,12 @@ sub update_layout {
 
 my $lastzonecb;
 sub update_zonelist {
-    my ($box, $cc) = @_;
+    my ($grid, $cc) = @_;
 
     my $sel = Proxmox::Install::Config::get_timezone(); # initial default
     if ($lastzonecb) {
 	$sel = $lastzonecb->get_active_text();
-	$box->remove($lastzonecb);
+	$grid->remove($lastzonecb);
     }
 
     my $cb = $lastzonecb = Gtk3::ComboBoxText->new();
@@ -664,7 +667,7 @@ sub update_zonelist {
     $cb->set_active($selected_index || 0);
 
     $cb->show;
-    $box->pack_start($cb, 0, 0, 0);
+    $grid->attach($cb, 1, 1, 1, 1);
 }
 
 sub create_password_view {
@@ -673,47 +676,40 @@ sub create_password_view {
 
     my $password = Proxmox::Install::Config::get_password();
 
-    my $vbox2 =  Gtk3::Box->new('vertical', 0);
-    $gtk_state->{inbox}->pack_start($vbox2, 1, 0, 0);
-    my $vbox =  Gtk3::Box->new('vertical', 0);
-    $vbox2->pack_start($vbox, 0, 0, 10);
+    my $grid = &$create_basic_grid();
+    $gtk_state->{inbox}->pack_start($grid, 0, 0, 0);
 
-    my $hbox1 = Gtk3::Box->new('horizontal', 0);
     my $label = Gtk3::Label->new("Password");
     $label->set_size_request(150, -1);
     $label->set_xalign(1.0);
-    $hbox1->pack_start($label, 0, 0, 10);
+    $grid->attach($label, 0, 0, 1, 1);
     my $pwe1 = Gtk3::Entry->new();
     $pwe1->set_visibility(0);
     $pwe1->set_text($password) if $password;
     $pwe1->set_size_request(200, -1);
-    $hbox1->pack_start($pwe1, 0, 0, 0);
+    $grid->attach($pwe1, 1, 0, 1, 1);
 
-    my $hbox2 = Gtk3::Box->new('horizontal', 0);
     $label = Gtk3::Label->new("Confirm");
     $label->set_size_request(150, -1);
     $label->set_xalign(1.0);
-    $hbox2->pack_start($label, 0, 0, 10);
+    $grid->attach($label, 0, 1, 1, 1);
     my $pwe2 = Gtk3::Entry->new();
     $pwe2->set_visibility(0);
     $pwe2->set_text($password) if $password;
     $pwe2->set_size_request(200, -1);
-    $hbox2->pack_start($pwe2, 0, 0, 0);
+    $grid->attach($pwe2, 1, 1, 1, 1);
 
-    my $hbox3 = Gtk3::Box->new('horizontal', 0);
     $label = Gtk3::Label->new("Email");
     $label->set_size_request(150, -1);
     $label->set_xalign(1.0);
-    $hbox3->pack_start($label, 0, 0, 10);
+    $label->set_margin_top(10);
+    $grid->attach($label, 0, 2, 1, 1);
+
     my $eme = Gtk3::Entry->new();
     $eme->set_size_request(200, -1);
     $eme->set_text(Proxmox::Install::Config::get_mailto());
-    $hbox3->pack_start($eme, 0, 0, 0);
-
-
-    $vbox->pack_start($hbox1, 0, 0, 5);
-    $vbox->pack_start($hbox2, 0, 0, 5);
-    $vbox->pack_start($hbox3, 0, 0, 15);
+    $eme->set_margin_top(10);
+    $grid->attach($eme, 1, 2, 1, 1);
 
     $gtk_state->{inbox}->show_all;
 
@@ -767,10 +763,8 @@ sub create_country_view {
 
     my $locales = $iso_env->{locales};
 
-    my $vbox2 =  Gtk3::Box->new('vertical', 0);
-    $gtk_state->{inbox}->pack_start($vbox2, 1, 0, 0);
-    my $vbox =  Gtk3::Box->new('vertical', 0);
-    $vbox2->pack_start($vbox, 0, 0, 10);
+    my $grid = &$create_basic_grid();
+    $gtk_state->{inbox}->pack_start($grid, 0, 0, 0);
 
     my $w = Gtk3::Entry->new();
     $w->set_size_request(200, -1);
@@ -781,18 +775,16 @@ sub create_country_view {
     $c->set_popup_set_width(1);
     $c->set_inline_completion(1);
 
-    my $hbox2 = Gtk3::Box->new('horizontal', 0);
     my $label = Gtk3::Label->new("Time zone");
     $label->set_size_request(150, -1);
     $label->set_xalign(1.0);
-    $hbox2->pack_start($label, 0, 0, 10);
-    update_zonelist ($hbox2);
+    $grid->attach($label, 0, 1, 1, 1);
+    update_zonelist ($grid);
 
-    my $hbox3 = Gtk3::Box->new('horizontal', 0);
     $label = Gtk3::Label->new("Keyboard Layout");
     $label->set_size_request(150, -1);
     $label->set_xalign(1.0);
-    $hbox3->pack_start($label, 0, 0, 10);
+    $grid->attach($label, 0, 2, 1, 1);
 
     my $kmapcb = Gtk3::ComboBoxText->new();
     $kmapcb->set_size_request (200, -1);
@@ -801,7 +793,7 @@ sub create_country_view {
     }
 
     update_layout($kmapcb);
-    $hbox3->pack_start ($kmapcb, 0, 0, 0);
+    $grid->attach($kmapcb, 1, 2, 1, 1);
 
     $kmapcb->signal_connect ('changed' => sub {
 	my $sel = $kmapcb->get_active_text();
@@ -838,7 +830,7 @@ sub create_country_view {
 	my $text = $entry->get_text;
 
 	if (my $cc = $locales->{countryhash}->{lc($text)}) {
-	    update_zonelist($hbox2, $cc);
+	    update_zonelist($grid, $cc);
 	    my $kmap = $locales->{country}->{$cc}->{kmap} || 'en-us';
 	    update_layout($kmapcb, $kmap);
 	}
@@ -898,17 +890,11 @@ sub create_country_view {
 
     $w->set_completion ($c);
 
-    my $hbox =  Gtk3::Box->new('horizontal', 0);
-
     $label = Gtk3::Label->new("Country");
     $label->set_xalign(1.0);
     $label->set_size_request(150, -1);
-    $hbox->pack_start($label, 0, 0, 10);
-    $hbox->pack_start($w, 0, 0, 0);
-
-    $vbox->pack_start($hbox, 0, 0, 5);
-    $vbox->pack_start($hbox2, 0, 0, 5);
-    $vbox->pack_start($hbox3, 0, 0, 5);
+    $grid->attach($label, 0, 0, 1, 1);
+    $grid->attach($w, 1, 0, 1, 1);
 
     my $country = Proxmox::Install::Config::get_country();
     if ($country && (my $entry = $locales->{country}->{$country})) {
@@ -940,21 +926,6 @@ my $target_hd_combo;
 my $target_hd_label;
 
 my $hdoption_first_setup = 1;
-
-my $create_basic_grid = sub {
-    my $grid =  Gtk3::Grid->new();
-    $grid->set_visible(1);
-    $grid->set_column_spacing(10);
-    $grid->set_row_spacing(10);
-    $grid->set_hexpand(1);
-
-    $grid->set_margin_start(10);
-    $grid->set_margin_end(20);
-    $grid->set_margin_top(5);
-    $grid->set_margin_bottom(5);
-
-    return $grid;
-};
 
 # takes an array ref of rows with [$label_text, $widget, $suffix_label] array refs as columns
 # $suffix_label is optional
@@ -1145,7 +1116,7 @@ my $create_raid_advanced_grid = sub {
 
     my $combo_checksum = Gtk3::ComboBoxText->new();
     $combo_checksum->set_tooltip_text("zfs checksum algorithm for rpool dataset");
-    my $csum_opts = ["on", "off","fletcher2", "fletcher4", "sha256"];
+    my $csum_opts = ["on", "fletcher4", "sha256"];
     foreach my $opt (@$csum_opts) {
 	$combo_checksum->append($opt, $opt);
     }
@@ -1353,7 +1324,7 @@ sub create_hdoption_view {
 	    $target_hd_label->set_text("Target: $filesys ");
 	    $options_stack->set_visible_child_name("raiddisk");
 	} else {
-	    $target_hd_label->set_text("Target Harddisk: ");
+	    $target_hd_label->set_text("Target Harddisk");
 	}
 
 	if ($raid) {
@@ -1459,7 +1430,7 @@ sub create_hdsel_view {
 	Proxmox::Install::Config::set_target_hd($devname);
     }
 
-    $target_hd_label = Gtk3::Label->new("Target Harddisk: ");
+    $target_hd_label = Gtk3::Label->new("Target Harddisk");
     $hbox->pack_start($target_hd_label, 0, 0, 0);
 
     $target_hd_combo = Gtk3::ComboBoxText->new();
