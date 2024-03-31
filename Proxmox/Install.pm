@@ -586,15 +586,11 @@ sub rockchip_dtb_setup {
 	if ($kernel_version =~ /rockchip/){
 	print "kernel is rockchip\n";
 		if ($zfs == '1') {
-			syscmd("mount $espdev $targetdir/boot/efi/")  ||
-				die "unable to mount ESP  on '$espdev'\n";
-			syscmd("cp -r /cdrom/dtb $targetdir/boot/efi/") ||
-				die "copy dtbs to '$espdev'\n";
-			syscmd("umount -l $targetdir/boot/efi/") ||
-				die "unable to umount ESP  on '$espdev'\n";
+			syscmd("mount $espdev $targetdir/boot/efi/");
+			syscmd("cp -r /cdrom/dtb $targetdir/boot/efi/");
+			syscmd("umount -l $targetdir/boot/efi/") ;
 		}else{
-			syscmd("cp -r /cdrom/dtb $targetdir/boot/efi/") ||
-				die "copy dtbs to '$espdev'\n";
+			syscmd("cp -r /cdrom/dtb $targetdir/boot/efi/");
 		}
 	}
 }
