@@ -632,6 +632,7 @@ sub rockchip_dtb_setup {
 	# We create \dtb\base\ in esp root
 	my $kernel_version = `uname -r`;
 	if ($kernel_version =~ /rockchip/){
+	print "kernel is rockchip\n";
 		if ($zfs == '1') {
 			syscmd("mount $espdev $targetdir/boot/efi/")  ||
 				die "unable to mount ESP  on '$espdev'\n";
