@@ -632,13 +632,16 @@ sub rockchip_dtb_setup {
 	# We create \dtb\base\ in esp root
 	my $kernel_version = `uname -r`;
 	if ($kernel_version =~ /rockchip/){
-	print "kernel is rockchip\n";
 		if ($zfs == '1') {
-			syscmd("mount $espdev $targetdir/boot/efi/");
-			syscmd("cp -r /cdrom/dtb $targetdir/boot/efi/");
-			syscmd("umount -l $targetdir/boot/efi/") ;
+			syscmd("mount $espdev $targetdir/boot/efi/")  ||
+				die "unable to mount ESP  on '$espdev'\n";
+			syscmd("cp -r /cdrom/dtb $targetdir/boot/efi/") ||
+				die "copy dtbs to '$espdev'\n";
+			syscmd("umount -l $targetdir/boot/efi/") ||
+				die "unable to umount ESP  on '$espdev'\n";
 		}else{
-			syscmd("cp -r /cdrom/dtb $targetdir/boot/efi/");
+			syscmd("cp -r /cdrom/dtb $targetdir/boot/efi/") ||
+				die "copy dtbs to '$espdev'\n";
 		}
 	}
 }
@@ -686,15 +689,15 @@ sub prepare_grub_efi_boot_esp {
 
 	# also install fallback boot file (OVMF does not boot without)
 	mkdir("$targetdir/boot/efi/EFI/BOOT");
-	syscmd("cp -r $targetdir/boot/efi/EFI/proxmox/* $targetdir/boot/efi/EFI/boot/");
+	syscmd("cp -r $targetdir/boot/efi/EFI/proxmox/* $targetdir/boot/efi/EFI/BOOT/");
 	if ($arch eq "aarch64"){
-		syscmd("cp $targetdir/boot/efi/EFI/boot/grubaa64.efi $targetdir/boot/efi/EFI/boot/bootaa64.efi ") == 0  ||
+		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubaa64.efi $targetdir/boot/efi/EFI/BOOT/BOOAA64.EFI ") == 0  ||
 	    die "unable to copy efi boot loader\n";
 	} elsif ($arch eq "loongarch64") { 
-		syscmd("cp $targetdir/boot/efi/EFI/boot/grubloongarch64.efi $targetdir/boot/efi/EFI/boot/bootloongarch64.efi") == 0  ||
+		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubloongarch64.efi $targetdir/boot/efi/EFI/BOOT/BOOTLOONGARCH64.efi") == 0  ||
             die "unable to copy efi boot loader\n";
 	} elsif ($arch eq "riscv64") {
-		syscmd("cp $targetdir/boot/efi/EFI/boot/grubriscv64.efi $targetdir/boot/efi/EFI/boot/bootriscv64.efi") == 0  ||
+		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubriscv64.efi $targetdir/boot/efi/EFI/BOOT/BOOTRISCV64.efi") == 0  ||
             die "unable to copy efi boot loader\n";
 	} else {
                 die "unable to opy efi boot loader on arch $arch\n";
