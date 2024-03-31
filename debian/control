@@ -20,13 +20,21 @@ Homepage: https://www.proxmox.com
 
 Package: proxmox-installer
 Architecture: any
-Depends: chrony,
+Depends: btrfs-progs,
+         chrony,
+         eject,
          geoip-bin,
          libgtk3-perl,
          libgtk3-webkit2-perl,
          libjson-perl,
+         lvm2,
+         openbox,
          proxmox-kernel-helper,
          squashfs-tools,
+         thin-provisioning-tools,
+         xorg,
+         zfsutils-linux,
+         zfs-initramfs,
          ${misc:Depends},
          ${perl:Depends},
          ${shlibs:Depends},
