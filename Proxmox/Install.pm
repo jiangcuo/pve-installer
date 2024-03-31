@@ -578,6 +578,28 @@ my sub chroot_chmod {
 	die "chroot: unable to change permission mode for '$path'\n";
 }
 
+sub rockchip_dtb_setup {
+	my ($espdev, $targetdir, $zfs) = @_;
+	# For rockchpi efi env need Device Tree mode,   https://github.com/edk2-porting/edk2-rk3588
+	# We create \dtb\base\ in esp root
+	my $kernel_version = `uname -r`;
+	if ($kernel_version =~ /rockchip/){
+	print "kernel is rockchip\n";
+		if ($zfs == '1') {
+			syscmd("mount $espdev $targetdir/boot/efi/")  ||
+				die "unable to mount ESP  on '$espdev'\n";
+			syscmd("cp -r /cdrom/dtb $targetdir/boot/efi/") ||
+				die "copy dtbs to '$espdev'\n";
+			syscmd("umount -l $targetdir/boot/efi/") ||
+				die "unable to umount ESP  on '$espdev'\n";
+		}else{
+			syscmd("cp -r /cdrom/dtb $targetdir/boot/efi/") ||
+				die "copy dtbs to '$espdev'\n";
+		}
+	}
+}
+
+
 sub prepare_proxmox_boot_esp {
     my ($espdev, $targetdir) = @_;
 
@@ -596,6 +618,7 @@ sub prepare_proxmox_boot_esp {
 
     syscmd("chroot $targetdir proxmox-boot-tool init $espdev $mode") == 0 ||
 	die "unable to init ESP and install proxmox-boot loader on '$espdev'\n";
+	rockchip_dtb_setup($espdev, $targetdir,1);
 }
 
 sub prepare_grub_efi_boot_esp {
@@ -623,17 +646,19 @@ sub prepare_grub_efi_boot_esp {
 		warn "unable to install the EFI boot loader on '$dev', ignoring (not booted using UEFI)\n";
 	    }
 	}
+	rockchip_dtb_setup($espdev, $targetdir , 0);
+
 	# also install fallback boot file (OVMF does not boot without)
 	mkdir("$targetdir/boot/efi/EFI/BOOT");
-	syscmd("cp -r $targetdir/boot/efi/EFI/proxmox/* $targetdir/boot/efi/EFI/boot/");
+	syscmd("cp -r $targetdir/boot/efi/EFI/proxmox/* $targetdir/boot/efi/EFI/BOOT/");
 	if ($arch eq "aarch64"){
-		syscmd("cp $targetdir/boot/efi/EFI/boot/grubaa64.efi $targetdir/boot/efi/EFI/boot/bootaa64.efi ") == 0  ||
+		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubaa64.efi $targetdir/boot/efi/EFI/BOOT/BOOAA64.EFI ") == 0  ||
 	    die "unable to copy efi boot loader\n";
 	} elsif ($arch eq "loongarch64") { 
-		syscmd("cp $targetdir/boot/efi/EFI/boot/grubloongarch64.efi $targetdir/boot/efi/EFI/boot/bootloongarch64.efi") == 0  ||
+		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubloongarch64.efi $targetdir/boot/efi/EFI/BOOT/BOOTLOONGARCH64.efi") == 0  ||
             die "unable to copy efi boot loader\n";
 	} elsif ($arch eq "riscv64") {
-		syscmd("cp $targetdir/boot/efi/EFI/boot/grubriscv64.efi $targetdir/boot/efi/EFI/boot/bootriscv64.efi") == 0  ||
+		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubriscv64.efi $targetdir/boot/efi/EFI/BOOT/BOOTRISCV64.efi") == 0  ||
             die "unable to copy efi boot loader\n";
 	}  else {
                 die "unable to opy efi boot loader on arch $arch\n";
