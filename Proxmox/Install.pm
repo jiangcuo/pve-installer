@@ -648,7 +648,7 @@ sub prepare_grub_efi_boot_esp {
 	mkdir("$targetdir/boot/efi/EFI/BOOT");
 	syscmd("cp -r $targetdir/boot/efi/EFI/proxmox/* $targetdir/boot/efi/EFI/BOOT/");
 	if ($arch eq "aarch64"){
-		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubaa64.efi $targetdir/boot/efi/EFI/BOOT/BOOAA64.EFI ") == 0  ||
+		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubaa64.efi $targetdir/boot/efi/EFI/BOOT/BOOTAA64.EFI ") == 0  ||
 	    die "unable to copy efi boot loader\n";
 	} elsif ($arch eq "loongarch64") { 
 		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubloongarch64.efi $targetdir/boot/efi/EFI/BOOT/BOOTLOONGARCH64.efi") == 0  ||
