@@ -4,14 +4,27 @@ Priority: optional
 Maintainer: Proxmox Support Team <support@proxmox.com>
 Build-Depends: cargo:native,
                debhelper-compat (= 12),
+               iproute2,
                iso-codes,
                libgtk3-perl,
                libpve-common-perl,
                librsvg2-bin,
+               librust-anyhow-1-dev,
+               librust-clap-4+derive-dev,
                librust-cursive+termion-backend-dev (>= 0.20.0),
+               librust-glob-0.3-dev,
+               librust-hex-0.4-dev,
+               librust-native-tls-dev,
+               librust-nix-0.26+default-dev,
                librust-regex-1+default-dev (>= 1.7~~),
+               librust-rustls-0.20+dangerous-configuration-dev,
+               librust-rustls-native-certs-dev,
                librust-serde-1+default-dev,
                librust-serde-json-1+default-dev,
+               librust-serde-plain-1+default-dev,
+               librust-sha2-0.10-dev,
+               librust-toml-0.7-dev,
+               librust-ureq-2.6-dev,
                libtest-mockmodule-perl,
                perl,
                rustc:native,
@@ -25,6 +38,7 @@ Depends: btrfs-progs,
          chrony,
          eject,
          geoip-bin,
+         iproute2,
          libgtk3-perl,
          libgtk3-webkit2-perl,
          libjson-perl,
@@ -46,3 +60,12 @@ Description: Installer for Proxmox Projects
   * Proxmox VE.
   * Proxmox Mail Gateway.
   * Proxmox Backup Server
+
+Package: proxmox-auto-install-assistant
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends},
+Recommends: xorriso,
+Description: Assistant to help with automated installations
+ Provides a helper that can assist with creating an answer file for a automated
+ installation of a Proxmox project, and preparing a official ISO image to use
+ this answer file.

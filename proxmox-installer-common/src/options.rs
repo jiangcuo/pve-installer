@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use std::net::{IpAddr, Ipv4Addr};
 use std::{cmp, fmt};
 
@@ -6,7 +7,8 @@ use crate::setup::{
 };
 use crate::utils::{CidrAddress, Fqdn};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum BtrfsRaidLevel {
     Raid0,
     Raid1,
@@ -24,13 +26,17 @@ impl fmt::Display for BtrfsRaidLevel {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum ZfsRaidLevel {
     Raid0,
     Raid1,
     Raid10,
+    #[serde(rename = "raidz-1")]
     RaidZ,
+    #[serde(rename = "raidz-2")]
     RaidZ2,
+    #[serde(rename = "raidz-3")]
     RaidZ3,
 }
 
@@ -48,7 +54,8 @@ impl fmt::Display for ZfsRaidLevel {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum FsType {
     Ext4,
     Xfs,
@@ -112,7 +119,8 @@ impl BtrfsBootdiskOptions {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all(deserialize = "lowercase"))]
 pub enum ZfsCompressOption {
     #[default]
     On,
@@ -141,7 +149,8 @@ pub const ZFS_COMPRESS_OPTIONS: &[ZfsCompressOption] = {
     &[On, Off, Lzjb, Lz4, Zle, Gzip, Zstd]
 };
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
 pub enum ZfsChecksumOption {
     #[default]
     On,
@@ -221,7 +230,7 @@ pub enum AdvancedBootdiskOptions {
     Btrfs(BtrfsBootdiskOptions),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Disk {
     pub index: String,
     pub path: String,
@@ -253,7 +262,7 @@ impl cmp::Eq for Disk {}
 
 impl cmp::PartialOrd for Disk {
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        self.index.partial_cmp(&other.index)
+        Some(self.cmp(other))
     }
 }
 
@@ -294,7 +303,7 @@ impl TimezoneOptions {
         let timezone = locales
             .cczones
             .get(&country)
-            .and_then(|zones| zones.get(0))
+            .and_then(|zones| zones.first())
             .cloned()
             .unwrap_or_else(|| "UTC".to_owned());
 
@@ -343,7 +352,7 @@ pub struct NetworkOptions {
 }
 
 impl NetworkOptions {
-    const DEFAULT_DOMAIN: &str = "example.invalid";
+    const DEFAULT_DOMAIN: &'static str = "example.invalid";
 
     pub fn defaults_from(setup: &SetupInfo, network: &NetworkInfo) -> Self {
         let mut this = Self {
@@ -363,7 +372,7 @@ impl NetworkOptions {
             let mut filled = false;
             if let Some(gw) = &routes.gateway4 {
                 if let Some(iface) = network.interfaces.get(&gw.dev) {
-                    this.ifname = iface.name.clone();
+                    this.ifname.clone_from(&iface.name);
                     if let Some(addresses) = &iface.addresses {
                         if let Some(addr) = addresses.iter().find(|addr| addr.is_ipv4()) {
                             this.gateway = gw.gateway;
@@ -378,7 +387,7 @@ impl NetworkOptions {
                     if let Some(iface) = network.interfaces.get(&gw.dev) {
                         if let Some(addresses) = &iface.addresses {
                             if let Some(addr) = addresses.iter().find(|addr| addr.is_ipv6()) {
-                                this.ifname = iface.name.clone();
+                                this.ifname.clone_from(&iface.name);
                                 this.gateway = gw.gateway;
                                 this.address = addr.clone();
                             }

@@ -3,6 +3,8 @@ package Proxmox::Sys::Net;
 use strict;
 use warnings;
 
+use Proxmox::Sys::Udev;
+
 use base qw(Exporter);
 our @EXPORT_OK = qw(parse_ip_address parse_ip_mask parse_fqdn);
 
@@ -189,6 +191,17 @@ sub get_ip_config {
     }
 }
 
+sub udevadm_netdev_details {
+    my $ip_config = get_ip_config();
+
+    my $result = {};
+    for my $dev (values $ip_config->{ifaces}->%*) {
+	my $name = $dev->{name};
+	$result->{$name} = Proxmox::Sys::Udev::get_udev_properties("/sys/class/net/$name");
+    }
+    return $result;
+}
+
 # Tries to detect the FQDN hostname for this system via DHCP, if available.
 #
 # DHCP server can set option 12 to inform the client about it's hostname [0]. dhclient dumps all
@@ -228,7 +241,7 @@ sub parse_fqdn : prototype($) {
 	if $text =~ /^[0-9]+(?:\.|$)/;
 
     die "FQDN must only consist of alphanumeric characters and dashes\n"
-	if $text !~ m/^${Proxmox::Sys::Net::FQDN_RE}$/;
+	if $text !~ m/^${FQDN_RE}$/;
 
     if ($text =~ m/^([^\.]+)\.(\S+)$/) {
 	return ($1, $2);

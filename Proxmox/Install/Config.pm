@@ -82,6 +82,7 @@ my sub init_cfg {
 	# TODO: single disk selection config
 	target_hd => undef,
 	disk_selection => {},
+	lvm_auto_rename => 0,
 
 	# locale
 	country => $country,
@@ -91,6 +92,7 @@ my sub init_cfg {
 	# root credentials & details
 	password => undef,
 	mailto => 'mail@example.invalid',
+	root_ssh_keys => [],
 
 	# network related
 	mngmt_nic => undef,
@@ -200,6 +202,9 @@ sub get_password { return get('password'); }
 sub set_mailto { set_key('mailto', $_[0]); }
 sub get_mailto { return get('mailto'); }
 
+sub set_root_ssh_keys { set_key('root_ssh_keys', $_[0]); }
+sub get_root_ssh_keys { return get('root_ssh_keys'); }
+
 sub set_mngmt_nic { set_key('mngmt_nic', $_[0]); }
 sub get_mngmt_nic { return get('mngmt_nic'); }
 
@@ -239,5 +244,7 @@ sub get_dns { return get('dns'); }
 sub set_target_cmdline { set_key('target_cmdline', $_[0]); }
 sub get_target_cmdline { return get('target_cmdline'); }
 
+sub set_lvm_auto_rename { set_key('lvm_auto_rename', $_[0]); }
+sub get_lvm_auto_rename { return get('lvm_auto_rename'); }
 
 1;

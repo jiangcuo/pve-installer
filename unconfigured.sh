@@ -5,17 +5,21 @@ trap "err_reboot" ERR
 # NOTE: we nowadays get exec'd by the initrd's PID 1, so we're the new PID 1
 
 parse_cmdline() {
+    start_auto_installer=0
     proxdebug=0
     proxtui=0
     serial=0
     # shellcheck disable=SC2013 # per word splitting is wanted here
     for par in $(cat /proc/cmdline); do
         case $par in
-            proxdebug)
+            proxdebug|proxmox-debug)
                 proxdebug=1
             ;;
-            proxtui)
+            proxtui|proxmox-tui-mode)
                 proxtui=1
+            ;;
+            proxauto|proxmox-start-auto-installer)
+                start_auto_installer=1
             ;;
             console=ttyS*)
                 serial=1
@@ -208,6 +212,16 @@ if [ $proxdebug -ne 0 ]; then
     debugsh || true
 fi
 
+# add custom DHCP options for auto installer
+if [ $start_auto_installer -ne 0 ]; then
+    echo "Preparing DHCP as potential source to get location of automatic-installation answer file"
+    cat >> /etc/dhcp/dhclient.conf <<EOF
+option proxmox-auto-installer-manifest-url code 250 = text;
+option proxmox-auto-installer-cert-fingerprint code 251 = text;
+also request proxmox-auto-installer-manifest-url, proxmox-auto-installer-cert-fingerprint;
+EOF
+fi
+
 # try to get ip config with dhcp
 echo -n "Attempting to get DHCP leases... "
 dhclient -v
@@ -224,6 +238,22 @@ setsid /sbin/agetty -a root --noclear tty3 &
 if [ $proxtui -ne 0 ]; then
     echo "Starting the TUI installer"
     /usr/bin/proxmox-tui-installer 2>/dev/tty2
+elif [ $start_auto_installer -ne 0 ]; then
+    echo "Caching device info from udev"
+    /usr/bin/proxmox-low-level-installer dump-udev
+
+    if [ -f /cdrom/auto-installer-mode.toml ]; then
+        echo "Fetching answers for automatic installation"
+        /usr/bin/proxmox-fetch-answer >/run/automatic-installer-answers
+    else
+        printf "\nAutomatic installation selected but no config for fetching the answer file found!\n"
+        echo "Starting debug shell, to fetch the answer file manually use:"
+        echo "  proxmox-fetch-answer MODE >/run/automatic-installer-answers"
+        echo "and enter 'exit' or press 'CTRL' + 'D' when finished."
+        debugsh || true
+    fi
+    echo "Starting automatic installation"
+    /usr/bin/proxmox-auto-installer </run/automatic-installer-answers
 else
     echo "Starting the installer GUI - see tty2 (CTRL+ALT+F2) for any errors..."
     xinit -- -dpi "$DPI" -s 0 >/dev/tty2 2>&1

@@ -4,6 +4,7 @@ PACKAGE = proxmox-installer
 BUILDDIR ?= $(PACKAGE)-$(DEB_VERSION_UPSTREAM)
 
 DEB=$(PACKAGE)_$(DEB_VERSION)_$(DEB_HOST_ARCH).deb
+ASSISTANT_DEB=proxmox-auto-install-assistant_$(DEB_VERSION)_$(DEB_HOST_ARCH).deb
 DSC=$(PACKAGE)_$(DEB_VERSION).dsc
 
 CARGO ?= cargo
@@ -18,7 +19,12 @@ INSTALLER_SOURCES=$(shell git ls-files) country.dat
 
 PREFIX = /usr
 BINDIR = $(PREFIX)/bin
-USR_BIN := proxmox-tui-installer
+USR_BIN := \
+	   proxmox-chroot\
+	   proxmox-tui-installer\
+	   proxmox-fetch-answer\
+	   proxmox-auto-install-assistant \
+	   proxmox-auto-installer
 
 COMPILED_BINS := \
 	$(addprefix $(CARGO_COMPILEDIR)/,$(USR_BIN))
@@ -47,6 +53,10 @@ $(BUILDDIR):
 	  interfaces \
 	  proxinstall \
 	  proxmox-low-level-installer \
+	  proxmox-auto-installer/ \
+	  proxmox-auto-install-assistant/ \
+	  proxmox-fetch-answer/ \
+	  proxmox-chroot \
 	  proxmox-tui-installer/ \
 	  proxmox-installer-common/ \
 	  test/ \
@@ -60,6 +70,7 @@ country.dat: country.pl
 	mv country.dat.tmp country.dat
 
 deb: $(DEB)
+$(ASSISTANT_DEB): $(DEB)
 $(DEB): $(BUILDDIR)
 	cd $(BUILDDIR); dpkg-buildpackage -b -us -uc
 	lintian $(DEB)
@@ -98,7 +109,7 @@ VARLIBDIR=$(DESTDIR)/var/lib/proxmox-installer
 HTMLDIR=$(VARLIBDIR)/html/common
 
 .PHONY: install
-install: $(INSTALLER_SOURCES) $(CARGO_COMPILEDIR)/proxmox-tui-installer
+install: $(INSTALLER_SOURCES) $(COMPILED_BINS)
 	$(MAKE) -C banner install
 	$(MAKE) -C Proxmox install
 	install -D -m 644 interfaces $(DESTDIR)/etc/network/interfaces
@@ -117,15 +128,19 @@ install: $(INSTALLER_SOURCES) $(CARGO_COMPILEDIR)/proxmox-tui-installer
 $(COMPILED_BINS): cargo-build
 .PHONY: cargo-build
 cargo-build:
-	$(CARGO) build --package proxmox-tui-installer --bin proxmox-tui-installer $(CARGO_BUILD_ARGS)
+	$(CARGO) build --package proxmox-tui-installer --bin proxmox-tui-installer \
+		--package proxmox-auto-installer --bin proxmox-auto-installer \
+		--package proxmox-fetch-answer --bin proxmox-fetch-answer \
+		--package proxmox-auto-install-assistant --bin proxmox-auto-install-assistant \
+		--package proxmox-chroot --bin proxmox-chroot $(CARGO_BUILD_ARGS)
 
 %-banner.png: %-banner.svg
 	rsvg-convert -o $@ $<
 
 .PHONY: upload
 upload: UPLOAD_DIST ?= $(DEB_DISTRIBUTION)
-upload: $(DEB)
-	tar cf - $(DEB) | ssh -X repoman@repo.proxmox.com -- upload --product pve,pmg,pbs --dist $(UPLOAD_DIST)
+upload: $(DEB) $(ASSISTANT_DEB)
+	tar cf - $(DEB) $(ASSISTANT_DEB) | ssh -X repoman@repo.proxmox.com -- upload --product pve,pmg,pbs --dist $(UPLOAD_DIST)
 
 %.img:
 	truncate -s 2G $@

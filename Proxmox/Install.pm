@@ -16,7 +16,7 @@ use Proxmox::Install::StorageConfig;
 
 use Proxmox::Sys::Block qw(get_cached_disks wipe_disk partition_bootable_disk);
 use Proxmox::Sys::Command qw(run_command syscmd);
-use Proxmox::Sys::File qw(file_read_all file_read_firstline file_write_all);
+use Proxmox::Sys::File qw(file_read_firstline file_write_all);
 use Proxmox::UI;
 
 # TODO: move somewhere better?
@@ -264,7 +264,7 @@ sub get_zfs_raid_setup {
 	    $cmd .= " @$hd[1]";
 	}
     } elsif ($filesys eq 'zfs (RAID1)') {
-	die "zfs (RAID1) needs at least 2 device\n" if $diskcount < 2;
+	die "zfs (RAID1) needs at least 2 devices\n" if $diskcount < 2;
 	$cmd .= ' mirror ';
 	my $hd = @$devlist[0];
 	my $expected_size = @$hd[2]; # all disks need approximately same size
@@ -274,7 +274,7 @@ sub get_zfs_raid_setup {
 	    $cmd .= " @$hd[1]";
 	}
     } elsif ($filesys eq 'zfs (RAID10)') {
-	die "zfs (RAID10) needs at least 4 device\n" if $diskcount < 4;
+	die "zfs (RAID10) needs at least 4 devices\n" if $diskcount < 4;
 	die "zfs (RAID10) needs an even number of devices\n" if $diskcount & 1;
 
 	for (my $i = 0; $i < $diskcount; $i+=2) {
@@ -338,10 +338,10 @@ sub get_btrfs_raid_setup {
 	if ($filesys eq 'btrfs (RAID0)') {
 	    $mode = 'raid0';
 	} elsif ($filesys eq 'btrfs (RAID1)') {
-	    die "btrfs (RAID1) needs at least 2 device\n" if $diskcount < 2;
+	    die "btrfs (RAID1) needs at least 2 devices\n" if $diskcount < 2;
 	    $mode = 'raid1';
 	} elsif ($filesys eq 'btrfs (RAID10)') {
-	    die "btrfs (RAID10) needs at least 4 device\n" if $diskcount < 4;
+	    die "btrfs (RAID10) needs at least 4 devices\n" if $diskcount < 4;
 	    $mode = 'raid10';
 	} else {
 	    die "unknown btrfs mode '$filesys'\n";
@@ -383,8 +383,6 @@ sub ask_existing_vg_rename_or_abort {
     my $duplicate_vgs = get_pv_list_from_vgname($vgname);
     return if !$duplicate_vgs;
 
-    my $message = "Detected existing '$vgname' Volume Group(s)! Do you want to:\n";
-
     for my $vg_uuid (keys %$duplicate_vgs) {
 	my $vg = $duplicate_vgs->{$vg_uuid};
 
@@ -393,12 +391,20 @@ sub ask_existing_vg_rename_or_abort {
 	# we have a disk with both a "$vgname" and "$vgname-old"...
 	my $short_uid = sprintf "%08X", rand(0xffffffff);
 	$vg->{new_vgname} = "$vgname-OLD-$short_uid";
-
-	$message .= "rename VG backed by PV '$vg->{pvs}' to '$vg->{new_vgname}'\n";
     }
-    $message .= "or cancel the installation?";
 
-    my $response_ok = Proxmox::UI::prompt($message);
+    my $response_ok = Proxmox::Install::Config::get_lvm_auto_rename();
+    if (!$response_ok) {
+	my $message = "Detected existing '$vgname' Volume Group(s)! Do you want to:\n";
+
+	for my $vg_uuid (keys %$duplicate_vgs) {
+	    my $vg = $duplicate_vgs->{$vg_uuid};
+	    $message .= "rename VG backed by PV '$vg->{pvs}' to '$vg->{new_vgname}'\n";
+	}
+	$message .= "or cancel the installation?";
+
+	$response_ok = Proxmox::UI::prompt($message);
+    }
 
     if ($response_ok) {
 	for my $vg_uuid (keys %$duplicate_vgs) {
@@ -597,20 +603,12 @@ sub rockchip_dtb_setup {
 
 
 sub prepare_proxmox_boot_esp {
-    my ($espdev, $targetdir) = @_;
+    my ($espdev, $targetdir, $secureboot) = @_;
 
     my $mode = '';
 
-    # detect secure boot being enabled and switch to grub-on-ESP if it is
-    if (-d "/sys/firmware/efi") {
-	my $content = eval { file_read_all("/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c") };
-	if ($@) {
-	    warn "Failed to read secure boot state: $@\n";
-	} else {
-	    my @secureboot = unpack("CCCCC", $content);
-	    $mode = 'grub' if $secureboot[4] == 1;
-	}
-    }
+    # if secure boot is enabled switch to grub-on-ESP
+    $mode = 'grub' if $secureboot;
 
     syscmd("chroot $targetdir proxmox-boot-tool init $espdev $mode") == 0 ||
 	die "unable to init ESP and install proxmox-boot loader on '$espdev'\n";
@@ -874,8 +872,8 @@ sub extract_data {
 		die "unable to set zfs properties\n";
 	}
 
-	update_progress(0.04, 0, $maxper, "create swap space");
 	if ($swapfile) {
+	    update_progress(0.04, 0, $maxper, "create swap space");
 	    syscmd("mkswap -f $swapfile") == 0 ||
 		die "unable to create swap space\n";
 	}
@@ -898,11 +896,12 @@ sub extract_data {
 	    create_filesystem($rootdev, 'root', $filesys, 0.05, $maxper, 0, 1);
 	}
 
-	update_progress(1, 0.05, $maxper, "mounting target $rootdev");
 
 	if ($use_zfs) {
 	    # do nothing
 	} else {
+	    update_progress(1, 0.05, $maxper, "mounting target $rootdev");
+
 	    my $mount_opts = 'noatime';
 	    $mount_opts .= ',nobarrier'
 		if $use_btrfs || $filesys =~ /^ext\d$/;
@@ -1148,9 +1147,11 @@ _EOD
 	    # upon upgrade - and conflict with each other - install the fitting one only
 	    next if ($deb =~ /grub-pc_/ && $run_env->{boot_type} ne 'bios');
 	    next if ($deb =~ /grub-efi-amd64_/ && $run_env->{boot_type} ne 'efi');
+	    next if ($deb =~ /^proxmox-grub/ && $run_env->{boot_type} ne 'efi');
+	    next if ($deb =~ /^proxmox-secure-boot-support_/ && !$run_env->{secure_boot});
 
 	    update_progress($count/$pkg_count, 0.5, 0.75, "extracting $deb");
-	    print STDERR "extracting: $deb\n";
+
 	    syscmd("chroot $targetdir dpkg $dpkg_opts --force-depends --no-triggers --unpack /tmp/pkg/$deb") == 0
 		|| die "installation of package $deb failed\n";
 	    update_progress((++$count)/$pkg_count, 0.5, 0.75);
@@ -1271,7 +1272,7 @@ _EOD
 		foreach my $di (@$bootdevinfo) {
 		    my $dev = $di->{devname};
 		    if ($use_zfs) {
-			prepare_proxmox_boot_esp($di->{esp}, $targetdir);
+			prepare_proxmox_boot_esp($di->{esp}, $targetdir, $run_env->{secure_boot});
 		    } else {
 			if (!$native_4k_disk_bootable) {
 			    eval {
@@ -1311,6 +1312,13 @@ _EOD
 	# set root password
 	my $octets = encode("utf-8", Proxmox::Install::Config::get_password());
 	run_command("chroot $targetdir /usr/sbin/chpasswd", undef, "root:$octets\n");
+
+	# set root ssh keys
+	my $ssh_keys = Proxmox::Install::Config::get_root_ssh_keys();
+	if (scalar(@$ssh_keys) > 0) {
+	    mkdir "$targetdir/root/.ssh";
+	    file_write_all("$targetdir/root/.ssh/authorized_keys", join("\n", @$ssh_keys));
+	}
 
 	my $mailto = Proxmox::Install::Config::get_mailto();
 	if ($iso_env->{product} eq 'pmg') {

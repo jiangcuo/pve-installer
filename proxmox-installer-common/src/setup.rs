@@ -1,6 +1,6 @@
 use std::{
     cmp,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fmt,
     fs::File,
     io::{self, BufReader},
@@ -12,12 +12,15 @@ use std::{
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    options::{Disk, ZfsBootdiskOptions, ZfsChecksumOption, ZfsCompressOption},
+    options::{
+        BtrfsRaidLevel, Disk, FsType, ZfsBootdiskOptions, ZfsChecksumOption, ZfsCompressOption,
+        ZfsRaidLevel,
+    },
     utils::CidrAddress,
 };
 
 #[allow(clippy::upper_case_acronyms)]
-#[derive(Clone, Copy, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProxmoxProduct {
     PVE,
@@ -35,7 +38,17 @@ impl ProxmoxProduct {
     }
 }
 
-#[derive(Clone, Deserialize)]
+impl fmt::Display for ProxmoxProduct {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::PVE => "pve",
+            Self::PMG => "pmg",
+            Self::PBS => "pbs",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProductConfig {
     pub fullname: String,
     pub product: ProxmoxProduct,
@@ -43,16 +56,46 @@ pub struct ProductConfig {
     pub enable_btrfs: bool,
 }
 
-#[derive(Clone, Deserialize)]
+impl ProductConfig {
+    /// A mocked ProductConfig simulating a Proxmox VE environment.
+    pub fn mocked() -> Self {
+        Self {
+            fullname: String::from("Proxmox VE (mocked)"),
+            product: ProxmoxProduct::PVE,
+            enable_btrfs: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IsoInfo {
     pub release: String,
     pub isorelease: String,
+}
+
+impl IsoInfo {
+    /// A mocked IsoInfo with some edge case to convey that this is not necessarily purely numeric.
+    pub fn mocked() -> Self {
+        Self {
+            release: String::from("42.1"),
+            isorelease: String::from("mocked-1"),
+        }
+    }
 }
 
 /// Paths in the ISO environment containing installer data.
 #[derive(Clone, Deserialize)]
 pub struct IsoLocations {
     pub iso: PathBuf,
+}
+
+impl IsoLocations {
+    /// A mocked location, uses the current working directory by default
+    pub fn mocked() -> Self {
+        Self {
+            iso: std::env::current_dir().unwrap_or("/dev/null".into()),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -62,6 +105,18 @@ pub struct SetupInfo {
     #[serde(rename = "iso-info")]
     pub iso_info: IsoInfo,
     pub locations: IsoLocations,
+}
+
+impl SetupInfo {
+    /// Return a mocked SetupInfo that is very similar to how our actual ones look like and should
+    /// be good enough for testing.
+    pub fn mocked() -> Self {
+        Self {
+            config: ProductConfig::mocked(),
+            iso_info: IsoInfo::mocked(),
+            locations: IsoLocations::mocked(),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -85,7 +140,7 @@ pub struct KeyboardMapping {
 
 impl cmp::PartialOrd for KeyboardMapping {
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        self.name.partial_cmp(&other.name)
+        Some(self.cmp(other))
     }
 }
 
@@ -142,15 +197,15 @@ pub fn installer_setup(in_test_mode: bool) -> Result<(SetupInfo, LocaleInfo, Run
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct InstallZfsOption {
-    ashift: usize,
+    pub ashift: usize,
     #[serde(serialize_with = "serialize_as_display")]
-    compress: ZfsCompressOption,
+    pub compress: ZfsCompressOption,
     #[serde(serialize_with = "serialize_as_display")]
-    checksum: ZfsChecksumOption,
-    copies: usize,
-    arc_max: usize,
+    pub checksum: ZfsChecksumOption,
+    pub copies: usize,
+    pub arc_max: usize,
 }
 
 impl From<ZfsBootdiskOptions> for InstallZfsOption {
@@ -294,7 +349,7 @@ pub struct NetworkInfo {
     /// Maps devices to their configuration, if it has a usable configuration.
     /// (Contains no entries for devices with only link-local addresses.)
     #[serde(default)]
-    pub interfaces: HashMap<String, Interface>,
+    pub interfaces: BTreeMap<String, Interface>,
 
     /// The hostname of this machine, if set by the DHCP server.
     pub hostname: Option<String>,
@@ -386,4 +441,120 @@ pub fn spawn_low_level_installer(test_mode: bool) -> io::Result<process::Child> 
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
+}
+
+/// See Proxmox::Install::Config
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InstallConfig {
+    pub autoreboot: usize,
+
+    #[serde(
+        serialize_with = "serialize_fstype",
+        deserialize_with = "deserialize_fs_type"
+    )]
+    pub filesys: FsType,
+    pub hdsize: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swapsize: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maxroot: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minfree: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maxvz: Option<f64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zfs_opts: Option<InstallZfsOption>,
+
+    #[serde(
+        serialize_with = "serialize_disk_opt",
+        skip_serializing_if = "Option::is_none",
+        // only the 'path' property is serialized -> deserialization is problematic
+        // The information would be present in the 'run-env-info-json', but for now there is no
+        // need for it in any code that deserializes the low-level config. Therefore we are
+        // currently skipping it on deserialization
+        skip_deserializing
+    )]
+    pub target_hd: Option<Disk>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub disk_selection: BTreeMap<String, String>,
+
+    pub lvm_auto_rename: usize,
+
+    pub country: String,
+    pub timezone: String,
+    pub keymap: String,
+
+    pub password: String,
+    pub mailto: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub root_ssh_keys: Vec<String>,
+
+    pub mngmt_nic: String,
+
+    pub hostname: String,
+    pub domain: String,
+    #[serde(serialize_with = "serialize_as_display")]
+    pub cidr: CidrAddress,
+    pub gateway: IpAddr,
+    pub dns: IpAddr,
+}
+
+fn serialize_disk_opt<S>(value: &Option<Disk>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if let Some(disk) = value {
+        serializer.serialize_str(&disk.path)
+    } else {
+        serializer.serialize_none()
+    }
+}
+
+fn serialize_fstype<S>(value: &FsType, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    use FsType::*;
+    let value = match value {
+        // proxinstall::$fssetup
+        Ext4 => "ext4",
+        Xfs => "xfs",
+        // proxinstall::get_zfs_raid_setup()
+        Zfs(ZfsRaidLevel::Raid0) => "zfs (RAID0)",
+        Zfs(ZfsRaidLevel::Raid1) => "zfs (RAID1)",
+        Zfs(ZfsRaidLevel::Raid10) => "zfs (RAID10)",
+        Zfs(ZfsRaidLevel::RaidZ) => "zfs (RAIDZ-1)",
+        Zfs(ZfsRaidLevel::RaidZ2) => "zfs (RAIDZ-2)",
+        Zfs(ZfsRaidLevel::RaidZ3) => "zfs (RAIDZ-3)",
+        // proxinstall::get_btrfs_raid_setup()
+        Btrfs(BtrfsRaidLevel::Raid0) => "btrfs (RAID0)",
+        Btrfs(BtrfsRaidLevel::Raid1) => "btrfs (RAID1)",
+        Btrfs(BtrfsRaidLevel::Raid10) => "btrfs (RAID10)",
+    };
+
+    serializer.collect_str(value)
+}
+
+pub fn deserialize_fs_type<'de, D>(deserializer: D) -> Result<FsType, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use FsType::*;
+    let de_fs: String = Deserialize::deserialize(deserializer)?;
+
+    match de_fs.as_str() {
+        "ext4" => Ok(Ext4),
+        "xfs" => Ok(Xfs),
+        "zfs (RAID0)" => Ok(Zfs(ZfsRaidLevel::Raid0)),
+        "zfs (RAID1)" => Ok(Zfs(ZfsRaidLevel::Raid1)),
+        "zfs (RAID10)" => Ok(Zfs(ZfsRaidLevel::Raid10)),
+        "zfs (RAIDZ-1)" => Ok(Zfs(ZfsRaidLevel::RaidZ)),
+        "zfs (RAIDZ-2)" => Ok(Zfs(ZfsRaidLevel::RaidZ2)),
+        "zfs (RAIDZ-3)" => Ok(Zfs(ZfsRaidLevel::RaidZ3)),
+        "btrfs (RAID0)" => Ok(Btrfs(BtrfsRaidLevel::Raid0)),
+        "btrfs (RAID1)" => Ok(Btrfs(BtrfsRaidLevel::Raid1)),
+        "btrfs (RAID10)" => Ok(Btrfs(BtrfsRaidLevel::Raid10)),
+        _ => Err(de::Error::custom("could not find file system: {de_fs}")),
+    }
 }
