@@ -7,7 +7,7 @@
   "disk_selection": {
 	"9": "9"
   },
-  "lvm_auto_rename": 1,
+  "existing_storage_auto_rename": 1,
   "filesys": "zfs (RAID0)",
   "gateway": "192.168.1.1",
   "hdsize": 223.57088470458984,
@@ -15,7 +15,7 @@
   "keymap": "de",
   "mailto": "mail@no.invalid",
   "mngmt_nic": "eno1",
-  "password": "123456",
+  "root_password": { "plain": "123456" },
   "timezone": "Europe/Vienna",
   "zfs_opts": {
       "arc_max": 2048,

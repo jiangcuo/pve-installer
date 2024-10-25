@@ -1,4 +1,8 @@
-use std::{fs, io, path, process::Command};
+use std::{
+    fs, io,
+    path::{self, PathBuf},
+    process::Command,
+};
 
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -6,6 +10,7 @@ use nix::mount::{mount, umount, MsFlags};
 use proxmox_installer_common::{
     options::FsType,
     setup::{InstallConfig, SetupInfo},
+    RUNTIME_DIR,
 };
 use regex::Regex;
 
@@ -14,7 +19,7 @@ static BINDMOUNTS: [&str; 4] = ["dev", "proc", "run", "sys"];
 const TARGET_DIR: &str = "/target";
 const ZPOOL_NAME: &str = "rpool";
 
-/// Helper tool to prepare eveything to `chroot` into an installation
+/// Helper tool to prepare everything to `chroot` into an installation
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -79,7 +84,7 @@ fn main() {
         Commands::Cleanup(args) => cleanup(args),
     };
     if let Err(err) = res {
-        eprintln!("{err}");
+        eprintln!("{err:#}");
         std::process::exit(1);
     }
 }
@@ -108,7 +113,7 @@ fn cleanup(args: &CommandCleanup) -> Result<()> {
     let fs = get_fs(args.filesystem)?;
 
     if let Err(e) = bind_umount() {
-        eprintln!("{e}")
+        eprintln!("{e:#}")
     }
 
     match fs {
@@ -145,8 +150,8 @@ fn get_low_level_config() -> Result<InstallConfig> {
 }
 
 fn get_iso_info() -> Result<SetupInfo> {
-    let file = fs::File::open("/run/proxmox-installer/iso-info.json")?;
-    let reader = io::BufReader::new(file);
+    let path = PathBuf::from(RUNTIME_DIR).join("iso-info.json");
+    let reader = io::BufReader::new(fs::File::open(path)?);
     let setup_info: SetupInfo = serde_json::from_reader(reader)?;
     Ok(setup_info)
 }
@@ -188,7 +193,7 @@ fn mount_fs() -> Result<()> {
         .arg(product.to_string())
         .output();
     match res {
-        Err(e) => bail!("{e}"),
+        Err(e) => bail!("{e:#}"),
         Ok(output) => {
             if output.status.success() {
                 println!(

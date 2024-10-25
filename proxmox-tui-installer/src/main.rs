@@ -4,7 +4,7 @@ use std::{collections::HashMap, env, net::IpAddr};
 
 use cursive::{
     event::Event,
-    theme::{ColorStyle, Effect, PaletteColor, Style},
+    theme::{ColorStyle, Effect, Effects, PaletteColor, Style},
     view::{Nameable, Offset, Resizable, ViewWrapper},
     views::{
         Button, Checkbox, Dialog, DummyView, EditView, Layer, LinearLayout, PaddedView, Panel,
@@ -16,10 +16,10 @@ use cursive::{
 use regex::Regex;
 
 mod options;
-use options::InstallerOptions;
+use options::{InstallerOptions, PasswordOptions};
 
 use proxmox_installer_common::{
-    options::{BootdiskOptions, NetworkOptions, PasswordOptions, TimezoneOptions},
+    options::{BootdiskOptions, NetworkOptions, TimezoneOptions},
     setup::{installer_setup, LocaleInfo, ProxmoxProduct, RuntimeInfo, SetupInfo},
     utils::Fqdn,
 };
@@ -50,7 +50,7 @@ impl InstallerView {
     pub fn new<T: View>(
         state: &InstallerState,
         view: T,
-        next_cb: Box<dyn Fn(&mut Cursive)>,
+        next_cb: Box<dyn Fn(&mut Cursive) + Send + Sync>,
         focus_next: bool,
     ) -> Self {
         let mut bbar = LinearLayout::horizontal()
@@ -99,8 +99,8 @@ struct InstallerBackgroundView {
 impl InstallerBackgroundView {
     pub fn new() -> Self {
         let style = Style {
-            effects: Effect::Bold.into(),
-            color: ColorStyle::back(PaletteColor::View),
+            effects: Effects::only(Effect::Bold),
+            color: ColorStyle::new(PaletteColor::Primary, PaletteColor::View),
         };
 
         let mut view = StackView::new();
@@ -148,7 +148,7 @@ struct InstallerState {
 }
 
 fn main() {
-    let mut siv = cursive::termion();
+    let mut siv = cursive::crossterm();
 
     let in_test_mode = match env::args().nth(1).as_deref() {
         Some("-t") => true,
@@ -290,9 +290,9 @@ fn prompt_dialog(
     title: &str,
     text: &str,
     yes_text: &str,
-    callback_yes: Box<dyn Fn(&mut Cursive)>,
+    callback_yes: Box<dyn Fn(&mut Cursive) + Send + Sync>,
     no_text: &str,
-    callback_no: Box<dyn Fn(&mut Cursive)>,
+    callback_no: Box<dyn Fn(&mut Cursive) + Send + Sync>,
 ) {
     siv.add_layer(
         Dialog::around(TextView::new(text))

@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use crate::options::InstallerOptions;
-use proxmox_installer_common::{options::AdvancedBootdiskOptions, setup::InstallConfig};
+use proxmox_installer_common::{
+    options::AdvancedBootdiskOptions,
+    setup::{InstallConfig, InstallRootPassword},
+};
 
 impl From<InstallerOptions> for InstallConfig {
     fn from(options: InstallerOptions) -> Self {
@@ -17,13 +20,16 @@ impl From<InstallerOptions> for InstallConfig {
             zfs_opts: None,
             target_hd: None,
             disk_selection: BTreeMap::new(),
-            lvm_auto_rename: 0,
+            existing_storage_auto_rename: 0,
 
             country: options.timezone.country,
             timezone: options.timezone.timezone,
             keymap: options.timezone.kb_layout,
 
-            password: options.password.root_password,
+            root_password: InstallRootPassword {
+                plain: Some(options.password.root_password),
+                hashed: None,
+            },
             mailto: options.password.email,
             root_ssh_keys: vec![],
 

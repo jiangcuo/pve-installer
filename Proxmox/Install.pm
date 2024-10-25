@@ -17,6 +17,7 @@ use Proxmox::Install::StorageConfig;
 use Proxmox::Sys::Block qw(get_cached_disks wipe_disk partition_bootable_disk);
 use Proxmox::Sys::Command qw(run_command syscmd);
 use Proxmox::Sys::File qw(file_read_firstline file_write_all);
+use Proxmox::Sys::ZFS;
 use Proxmox::UI;
 
 # TODO: move somewhere better?
@@ -178,8 +179,40 @@ sub btrfs_create {
     syscmd($cmd);
 }
 
+sub zfs_ask_existing_zpool_rename {
+    my ($pool_name) = @_;
+
+    # At this point, no pools should be imported/active
+    my $exported_pools = Proxmox::Sys::ZFS::get_exported_pools();
+
+    foreach (@$exported_pools) {
+	next if $_->{name} ne $pool_name || $_->{state} ne 'ONLINE';
+	my $renamed_pool = "$_->{name}-OLD-$_->{id}";
+
+	my $do_rename = Proxmox::Install::Config::get_existing_storage_auto_rename();
+	if (!$do_rename) {
+	    $do_rename = Proxmox::UI::prompt(
+		"A ZFS pool named '$_->{name}' (id $_->{id}) already exists on the system.\n\n" .
+		"Do you want to rename the pool to '$renamed_pool' before continuing " .
+		"or cancel the installation?"
+	    );
+	}
+
+	# Import the pool using its id, as that is unique and works even if there are
+	# multiple zpools with the same name.
+	if ($do_rename) {
+	    Proxmox::Sys::ZFS::rename_pool($_->{id}, $renamed_pool);
+	} else {
+	    warn "Canceled installation as requested by user, due to already existing ZFS pool '$pool_name'\n";
+	    die "\n"; # causes abort without re-showing an error dialogue
+	}
+    }
+}
+
 sub zfs_create_rpool {
     my ($vdev, $pool_name, $root_volume_name) = @_;
+
+    zfs_ask_existing_zpool_rename($pool_name);
 
     my $iso_env = Proxmox::Install::ISOEnv::get();
 
@@ -393,8 +426,8 @@ sub ask_existing_vg_rename_or_abort {
 	$vg->{new_vgname} = "$vgname-OLD-$short_uid";
     }
 
-    my $response_ok = Proxmox::Install::Config::get_lvm_auto_rename();
-    if (!$response_ok) {
+    my $do_rename = Proxmox::Install::Config::get_existing_storage_auto_rename();
+    if (!$do_rename) {
 	my $message = "Detected existing '$vgname' Volume Group(s)! Do you want to:\n";
 
 	for my $vg_uuid (keys %$duplicate_vgs) {
@@ -403,10 +436,10 @@ sub ask_existing_vg_rename_or_abort {
 	}
 	$message .= "or cancel the installation?";
 
-	$response_ok = Proxmox::UI::prompt($message);
+	$do_rename = Proxmox::UI::prompt($message);
     }
 
-    if ($response_ok) {
+    if ($do_rename) {
 	for my $vg_uuid (keys %$duplicate_vgs) {
 	    my $vg = $duplicate_vgs->{$vg_uuid};
 	    my $new_vgname = $vg->{new_vgname};
@@ -667,6 +700,27 @@ sub prepare_grub_efi_boot_esp {
     warn $@ if $@;
 
     die "failed to prepare EFI boot using Grub on '$espdev': $err" if $err;
+}
+
+my sub setup_root_password {
+    my ($targetdir) = @_;
+
+    my $plain = Proxmox::Install::Config::get_root_password('plain');
+    my $hashed = Proxmox::Install::Config::get_root_password('hashed');
+
+    die "root password must be set!\n"
+	if !defined($plain) && !defined($hashed);
+
+    die "plain and hashed root password cannot be set at the same time!\n"
+	if defined($plain) && defined($hashed);
+
+    if (defined($plain)) {
+	my $octets = encode("utf-8", $plain);
+	run_command("chroot $targetdir /usr/sbin/chpasswd", undef, "root:$octets\n");
+    } elsif (defined($hashed)) {
+	my $octets = encode("utf-8", $hashed);
+	run_command("chroot $targetdir /usr/sbin/chpasswd --encrypted", undef, "root:$octets\n");
+    }
 }
 
 sub extract_data {
@@ -1309,9 +1363,7 @@ _EOD
 
 	diversion_remove($targetdir, "/sbin/start-stop-daemon");
 
-	# set root password
-	my $octets = encode("utf-8", Proxmox::Install::Config::get_password());
-	run_command("chroot $targetdir /usr/sbin/chpasswd", undef, "root:$octets\n");
+	setup_root_password($targetdir);
 
 	# set root ssh keys
 	my $ssh_keys = Proxmox::Install::Config::get_root_ssh_keys();

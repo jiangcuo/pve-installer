@@ -82,7 +82,7 @@ my sub init_cfg {
 	# TODO: single disk selection config
 	target_hd => undef,
 	disk_selection => {},
-	lvm_auto_rename => 0,
+	existing_storage_auto_rename => 0,
 
 	# locale
 	country => $country,
@@ -90,7 +90,7 @@ my sub init_cfg {
 	keymap => 'en-us',
 
 	# root credentials & details
-	password => undef,
+	root_password => undef,
 	mailto => 'mail@example.invalid',
 	root_ssh_keys => [],
 
@@ -196,8 +196,22 @@ sub get_timezone { return get('timezone'); }
 sub set_keymap { set_key('keymap', $_[0]); }
 sub get_keymap { return get('keymap'); }
 
-sub set_password { set_key('password', $_[0]); }
-sub get_password { return get('password'); }
+sub set_root_password {
+    my ($key) = @_;
+    croak "unknown root password option '$key'"
+	if $key ne 'plain' && $key ne 'hashed';
+
+    set_key('root_password', { $_[0] => $_[1] });
+}
+
+sub get_root_password {
+    my ($key) = @_;
+    croak "unknown root password option '$key'"
+	if $key ne 'plain' && $key ne 'hashed';
+
+    my $password = get('root_password');
+    return defined($password->{$key}) ? $password->{$key} : undef;
+}
 
 sub set_mailto { set_key('mailto', $_[0]); }
 sub get_mailto { return get('mailto'); }
@@ -244,7 +258,7 @@ sub get_dns { return get('dns'); }
 sub set_target_cmdline { set_key('target_cmdline', $_[0]); }
 sub get_target_cmdline { return get('target_cmdline'); }
 
-sub set_lvm_auto_rename { set_key('lvm_auto_rename', $_[0]); }
-sub get_lvm_auto_rename { return get('lvm_auto_rename'); }
+sub set_existing_storage_auto_rename { set_key('existing_storage_auto_rename', $_[0]); }
+sub get_existing_storage_auto_rename { return get('existing_storage_auto_rename'); }
 
 1;

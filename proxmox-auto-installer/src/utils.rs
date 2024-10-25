@@ -10,7 +10,9 @@ use crate::{
 };
 use proxmox_installer_common::{
     options::{FsType, NetworkOptions, ZfsChecksumOption, ZfsCompressOption},
-    setup::{InstallConfig, InstallZfsOption, LocaleInfo, RuntimeInfo, SetupInfo},
+    setup::{
+        InstallConfig, InstallRootPassword, InstallZfsOption, LocaleInfo, RuntimeInfo, SetupInfo,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -301,6 +303,17 @@ pub fn verify_locale_settings(answer: &Answer, locales: &LocaleInfo) -> Result<(
     Ok(())
 }
 
+fn verify_root_password_settings(answer: &Answer) -> Result<()> {
+    if answer.global.root_password.is_some() && answer.global.root_password_hashed.is_some() {
+        bail!("`global.root_password` and `global.root_password_hashed` cannot be set at the same time");
+    } else if answer.global.root_password.is_none() && answer.global.root_password_hashed.is_none()
+    {
+        bail!("One of `global.root_password` or `global.root_password_hashed` must be set");
+    } else {
+        Ok(())
+    }
+}
+
 pub fn parse_answer(
     answer: &Answer,
     udev_info: &UdevInfo,
@@ -316,6 +329,7 @@ pub fn parse_answer(
     let network_settings = get_network_settings(answer, udev_info, runtime_info, setup_info)?;
 
     verify_locale_settings(answer, locales)?;
+    verify_root_password_settings(answer)?;
 
     let mut config = InstallConfig {
         autoreboot: 1_usize,
@@ -328,13 +342,16 @@ pub fn parse_answer(
         zfs_opts: None,
         target_hd: None,
         disk_selection: BTreeMap::new(),
-        lvm_auto_rename: 1,
+        existing_storage_auto_rename: 1,
 
         country: answer.global.country.clone(),
         timezone: answer.global.timezone.clone(),
         keymap: answer.global.keyboard.to_string(),
 
-        password: answer.global.root_password.clone(),
+        root_password: InstallRootPassword {
+            plain: answer.global.root_password.clone(),
+            hashed: answer.global.root_password_hashed.clone(),
+        },
         mailto: answer.global.mailto.clone(),
         root_ssh_keys: answer.global.root_ssh_keys.clone(),
 
