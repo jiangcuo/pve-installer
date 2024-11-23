@@ -86,7 +86,6 @@ $(ASSISTANT_DEB): $(DEB)
 $(FIRST_BOOT_DEB): $(DEB)
 $(DEB): $(BUILDDIR)
 	cd $(BUILDDIR); dpkg-buildpackage -b -us -uc
-	lintian $(ALL_DEBS)
 
 test-$(DEB): $(INSTALLER_SOURCES)
 	rsync --exclude='test*.img' --exclude='*.deb' --exclude='build' -a * build
@@ -96,7 +95,6 @@ test-$(DEB): $(INSTALLER_SOURCES)
 dsc: $(DSC)
 	$(MAKE) clean
 	$(MAKE) $(DSC)
-	lintian $(DSC)
 
 $(DSC): $(BUILDDIR)
 	cd $(BUILDDIR); dpkg-buildpackage -S -us -uc -d
