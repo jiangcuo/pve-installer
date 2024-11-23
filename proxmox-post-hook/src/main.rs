@@ -429,6 +429,8 @@ impl PostHookInfo {
     ///
     /// * `run_cmd` - Callback to run a command inside the target chroot.
     /// * `open_file` - Callback to open a file inside the target chroot.
+    ///
+    /// [well-defined kernel header]: https://www.kernel.org/doc/html/latest/arch/x86/boot.html
     ///#[cfg(target_arch = "x86_64")] This function call was removed before, so it is safe
     fn gather_kernel_version(
         run_cmd: &dyn Fn(&[&str]) -> Result<String>,
