@@ -1,22 +1,23 @@
-use anyhow::{bail, Context as _, Result};
+use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 use glob::Pattern;
 use log::info;
 use std::{collections::BTreeMap, process::Command};
 
 use crate::{
-    answer::{self, Answer},
+    answer::{self, Answer, FirstBootHookSourceMode},
     udevinfo::UdevInfo,
 };
 use proxmox_installer_common::{
-    options::{FsType, NetworkOptions, ZfsChecksumOption, ZfsCompressOption},
+    options::{email_validate, FsType, NetworkOptions, ZfsChecksumOption, ZfsCompressOption},
     setup::{
-        InstallConfig, InstallRootPassword, InstallZfsOption, LocaleInfo, RuntimeInfo, SetupInfo,
+        InstallBtrfsOption, InstallConfig, InstallFirstBootSetup, InstallRootPassword,
+        InstallZfsOption, LocaleInfo, RuntimeInfo, SetupInfo,
     },
 };
 use serde::{Deserialize, Serialize};
 
-pub fn get_network_settings(
+fn get_network_settings(
     answer: &Answer,
     udev_info: &UdevInfo,
     runtime_info: &RuntimeInfo,
@@ -86,8 +87,14 @@ pub struct HttpOptions {
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub struct AutoInstSettings {
     pub mode: FetchAnswerFrom,
+    #[serde(default = "default_partition_label")]
+    pub partition_label: String,
     #[serde(default)]
     pub http: HttpOptions,
+}
+
+fn default_partition_label() -> String {
+    "proxmox-ais".to_owned()
 }
 
 #[derive(Deserialize, Debug)]
@@ -145,7 +152,7 @@ pub fn get_matched_udev_indexes(
     Ok(matches)
 }
 
-pub fn set_disks(
+fn set_disks(
     answer: &Answer,
     udev_info: &UdevInfo,
     runtime_info: &RuntimeInfo,
@@ -173,7 +180,7 @@ fn set_single_disk(
                 .iter()
                 .find(|item| item.path.ends_with(disk_name.as_str()));
             match disk {
-                Some(disk) => config.target_hd = Some(disk.clone()),
+                Some(disk) => config.target_hd = Some(disk.path.clone()),
                 None => bail!("disk in 'disk_selection' not found"),
             }
         }
@@ -183,10 +190,10 @@ fn set_single_disk(
                 .disks
                 .iter()
                 .find(|item| item.index == disk_index);
-            config.target_hd = disk.cloned();
+            config.target_hd = disk.map(|d| d.path.clone());
         }
     }
-    info!("Selected disk: {}", config.target_hd.clone().unwrap().path);
+    info!("Selected disk: {}", config.target_hd.clone().unwrap());
     Ok(())
 }
 
@@ -263,7 +270,7 @@ fn set_selected_disks(
     Ok(())
 }
 
-pub fn get_first_selected_disk(config: &InstallConfig) -> usize {
+fn get_first_selected_disk(config: &InstallConfig) -> usize {
     config
         .disk_selection
         .iter()
@@ -274,7 +281,7 @@ pub fn get_first_selected_disk(config: &InstallConfig) -> usize {
         .expect("could not parse key to usize")
 }
 
-pub fn verify_locale_settings(answer: &Answer, locales: &LocaleInfo) -> Result<()> {
+fn verify_locale_settings(answer: &Answer, locales: &LocaleInfo) -> Result<()> {
     info!("Verifying locale settings");
     if !locales
         .countries
@@ -303,7 +310,11 @@ pub fn verify_locale_settings(answer: &Answer, locales: &LocaleInfo) -> Result<(
     Ok(())
 }
 
-fn verify_root_password_settings(answer: &Answer) -> Result<()> {
+fn verify_email_and_root_password_settings(answer: &Answer) -> Result<()> {
+    info!("Verifying email and root password settings");
+
+    email_validate(&answer.global.mailto).with_context(|| answer.global.mailto.clone())?;
+
     if answer.global.root_password.is_some() && answer.global.root_password_hashed.is_some() {
         bail!("`global.root_password` and `global.root_password_hashed` cannot be set at the same time");
     } else if answer.global.root_password.is_none() && answer.global.root_password_hashed.is_none()
@@ -312,6 +323,18 @@ fn verify_root_password_settings(answer: &Answer) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+fn verify_first_boot_settings(answer: &Answer) -> Result<()> {
+    info!("Verifying first boot settings");
+
+    if let Some(first_boot) = &answer.first_boot {
+        if first_boot.source == FirstBootHookSourceMode::FromUrl && first_boot.url.is_none() {
+            bail!("first-boot executable source set to URL, but none specified!");
+        }
+    }
+
+    Ok(())
 }
 
 pub fn parse_answer(
@@ -329,7 +352,8 @@ pub fn parse_answer(
     let network_settings = get_network_settings(answer, udev_info, runtime_info, setup_info)?;
 
     verify_locale_settings(answer, locales)?;
-    verify_root_password_settings(answer)?;
+    verify_email_and_root_password_settings(answer)?;
+    verify_first_boot_settings(answer)?;
 
     let mut config = InstallConfig {
         autoreboot: 1_usize,
@@ -340,6 +364,7 @@ pub fn parse_answer(
         minfree: None,
         maxvz: None,
         zfs_opts: None,
+        btrfs_opts: None,
         target_hd: None,
         disk_selection: BTreeMap::new(),
         existing_storage_auto_rename: 1,
@@ -362,12 +387,21 @@ pub fn parse_answer(
         cidr: network_settings.address,
         gateway: network_settings.gateway,
         dns: network_settings.dns_server,
+
+        first_boot: InstallFirstBootSetup::default(),
     };
 
     set_disks(answer, udev_info, runtime_info, &mut config)?;
     match &answer.disks.fs_options {
         answer::FsOptions::LVM(lvm) => {
-            config.hdsize = lvm.hdsize.unwrap_or(config.target_hd.clone().unwrap().size);
+            let disk = runtime_info
+                .disks
+                .iter()
+                .find(|d| Some(&d.path) == config.target_hd.as_ref());
+
+            config.hdsize = lvm
+                .hdsize
+                .unwrap_or_else(|| disk.map(|d| d.size).unwrap_or_default());
             config.swapsize = lvm.swapsize;
             config.maxroot = lvm.maxroot;
             config.maxvz = lvm.maxvz;
@@ -393,8 +427,18 @@ pub fn parse_answer(
             config.hdsize = btrfs
                 .hdsize
                 .unwrap_or(runtime_info.disks[first_selected_disk].size);
+            config.btrfs_opts = Some(InstallBtrfsOption {
+                compress: btrfs.compress.unwrap_or_default(),
+            })
         }
     }
+
+    if let Some(first_boot) = &answer.first_boot {
+        config.first_boot.enabled = true;
+        config.first_boot.ordering_target =
+            Some(first_boot.ordering.as_systemd_target_name().to_owned());
+    }
+
     Ok(config)
 }
 

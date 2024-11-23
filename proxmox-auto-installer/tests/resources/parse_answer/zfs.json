@@ -24,5 +24,6 @@
       "checksum": "on",
       "compress": "lz4",
       "copies": 2
-  }
+  },
+  "first_boot": { "enabled": 0 }
 }

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::options::InstallerOptions;
 use proxmox_installer_common::{
     options::AdvancedBootdiskOptions,
-    setup::{InstallConfig, InstallRootPassword},
+    setup::{InstallConfig, InstallFirstBootSetup, InstallRootPassword},
 };
 
 impl From<InstallerOptions> for InstallConfig {
@@ -18,6 +18,7 @@ impl From<InstallerOptions> for InstallConfig {
             minfree: None,
             maxvz: None,
             zfs_opts: None,
+            btrfs_opts: None,
             target_hd: None,
             disk_selection: BTreeMap::new(),
             existing_storage_auto_rename: 0,
@@ -43,12 +44,14 @@ impl From<InstallerOptions> for InstallConfig {
             cidr: options.network.address,
             gateway: options.network.gateway,
             dns: options.network.dns_server,
+
+            first_boot: InstallFirstBootSetup::default(),
         };
 
         match &options.bootdisk.advanced {
             AdvancedBootdiskOptions::Lvm(lvm) => {
                 config.hdsize = lvm.total_size;
-                config.target_hd = Some(options.bootdisk.disks[0].clone());
+                config.target_hd = Some(options.bootdisk.disks[0].path.clone());
                 config.swapsize = lvm.swap_size;
                 config.maxroot = lvm.max_root_size;
                 config.minfree = lvm.min_lvm_free;
@@ -66,6 +69,7 @@ impl From<InstallerOptions> for InstallConfig {
             }
             AdvancedBootdiskOptions::Btrfs(btrfs) => {
                 config.hdsize = btrfs.disk_size;
+                config.btrfs_opts = Some(btrfs.clone().into());
 
                 for (i, disk) in options.bootdisk.disks.iter().enumerate() {
                     config

@@ -33,6 +33,7 @@ my $iso_env = Proxmox::Install::ISOEnv::get();
 use Proxmox::Install;
 use Proxmox::Install::Config;
 
+use Proxmox::Sys;
 use Proxmox::Sys::Block qw(get_cached_disks);
 use Proxmox::Sys::Command qw(syscmd);
 use Proxmox::Sys::File qw(file_read_all file_write_all);
@@ -733,7 +734,7 @@ sub create_password_view {
 	}
 
 	my $t3 = $eme->get_text;
-	if ($t3 !~ m/^[\w\+\-\~]+(\.[\w\+\-\~]+)*@[a-zA-Z0-9\-]+(\.[a-zA-Z0-9\-]+)*$/) {
+	if ($t3 !~ m/$Proxmox::Sys::EMAIL_RE/) {
 	    Proxmox::UI::message("Email does not look like a valid address (user\@domain.tld)");
 	    $eme->grab_focus();
 	    return;
@@ -1138,20 +1139,20 @@ my $create_raid_advanced_grid = sub {
     $spinbutton_copies->set_value($copies);
     push @$labeled_widgets, ['copies', $spinbutton_copies];
 
-    if ($iso_env->{product} eq 'pve') {
-	my $total_memory = Proxmox::Install::RunEnv::get('total_memory');
+    my $total_memory = Proxmox::Install::RunEnv::get('total_memory');
+    my $arc_max = Proxmox::Install::Config::get_zfs_opt('arc_max') || ($total_memory * 0.5);
 
-	my $spinbutton_arc_max = Gtk3::SpinButton->new_with_range(
-	    $Proxmox::Install::RunEnv::ZFS_ARC_MIN_SIZE_MIB, $total_memory, 1);
-	$spinbutton_arc_max->set_tooltip_text('Maximum ARC size in megabytes');
-	$spinbutton_arc_max->signal_connect('value-changed' => sub {
-	    my $w = shift;
-	    Proxmox::Install::Config::set_zfs_opt('arc_max', $w->get_value_as_int());
-	});
-	my $arc_max = Proxmox::Install::Config::get_zfs_opt('arc_max');
-	$spinbutton_arc_max->set_value($arc_max);
-	push @$labeled_widgets, ['ARC max size', $spinbutton_arc_max, 'MiB'];
-    }
+    my $arc_max_adjustment = Gtk3::Adjustment->new(
+	$arc_max, $Proxmox::Install::RunEnv::ZFS_ARC_MIN_SIZE_MIB,
+	$total_memory, 1, 10, 0);
+    my $spinbutton_arc_max = Gtk3::SpinButton->new($arc_max_adjustment, 1, 0);
+    $spinbutton_arc_max->set_tooltip_text('Maximum ARC size in megabytes');
+    $spinbutton_arc_max->signal_connect('value-changed' => sub {
+	my $w = shift;
+	Proxmox::Install::Config::set_zfs_opt('arc_max', $w->get_value_as_int());
+    });
+
+    push @$labeled_widgets, ['ARC max size', $spinbutton_arc_max, 'MiB'];
 
     push @$labeled_widgets, ['hdsize', $hdsize_btn, 'GB'];
     return $create_label_widget_grid->($labeled_widgets);;
@@ -1160,6 +1161,21 @@ my $create_raid_advanced_grid = sub {
 my $create_btrfs_raid_advanced_grid = sub {
     my ($hdsize_btn) = @_;
     my $labeled_widgets = [];
+
+    my $combo_compress = Gtk3::ComboBoxText->new();
+    $combo_compress->set_tooltip_text("btrfs compression algorithm for boot volume");
+    my $comp_opts = ["on", "off", "zlib", "lzo", "zstd"];
+    foreach my $opt (@$comp_opts) {
+	$combo_compress->append($opt, $opt);
+    }
+    my $compress = Proxmox::Install::Config::get_btrfs_opt('compress') // 'off';
+    $combo_compress->set_active_id($compress);
+    $combo_compress->signal_connect (changed => sub {
+	my $w = shift;
+	Proxmox::Install::Config::set_btrfs_opt('compress', $w->get_active_text());
+    });
+    push @$labeled_widgets, ['compress', $combo_compress];
+
     push @$labeled_widgets, ['hdsize', $hdsize_btn, 'GB'];
     return $create_label_widget_grid->($labeled_widgets);;
 };

@@ -1,5 +1,9 @@
-use serde::Deserialize;
+use anyhow::{bail, Result};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
+use std::str::FromStr;
+use std::sync::OnceLock;
 use std::{cmp, fmt};
 
 use crate::setup::{
@@ -7,55 +11,39 @@ use crate::setup::{
 };
 use crate::utils::{CidrAddress, Fqdn};
 
-#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all(deserialize = "lowercase", serialize = "UPPERCASE"))]
 pub enum BtrfsRaidLevel {
+    #[serde(alias = "RAID0")]
     Raid0,
+    #[serde(alias = "RAID1")]
     Raid1,
+    #[serde(alias = "RAID10")]
     Raid10,
 }
 
-impl fmt::Display for BtrfsRaidLevel {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use BtrfsRaidLevel::*;
-        match self {
-            Raid0 => write!(f, "RAID0"),
-            Raid1 => write!(f, "RAID1"),
-            Raid10 => write!(f, "RAID10"),
-        }
-    }
-}
+serde_plain::derive_display_from_serialize!(BtrfsRaidLevel);
 
-#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all(deserialize = "lowercase", serialize = "UPPERCASE"))]
 pub enum ZfsRaidLevel {
+    #[serde(alias = "RAID0")]
     Raid0,
+    #[serde(alias = "RAID1")]
     Raid1,
+    #[serde(alias = "RAID10")]
     Raid10,
-    #[serde(rename = "raidz-1")]
+    #[serde(alias = "RAIDZ-1", rename(deserialize = "raidz-1", serialize = "RAIDZ-1"))]
     RaidZ,
-    #[serde(rename = "raidz-2")]
+    #[serde(alias = "RAIDZ-2", rename(deserialize = "raidz-2", serialize = "RAIDZ-2"))]
     RaidZ2,
-    #[serde(rename = "raidz-3")]
+    #[serde(alias = "RAIDZ-3", rename(deserialize = "raidz-3", serialize = "RAIDZ-3"))]
     RaidZ3,
 }
 
-impl fmt::Display for ZfsRaidLevel {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use ZfsRaidLevel::*;
-        match self {
-            Raid0 => write!(f, "RAID0"),
-            Raid1 => write!(f, "RAID1"),
-            Raid10 => write!(f, "RAID10"),
-            RaidZ => write!(f, "RAIDZ-1"),
-            RaidZ2 => write!(f, "RAIDZ-2"),
-            RaidZ3 => write!(f, "RAIDZ-3"),
-        }
-    }
-}
+serde_plain::derive_display_from_serialize!(ZfsRaidLevel);
 
-#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FsType {
     Ext4,
     Xfs,
@@ -67,19 +55,67 @@ impl FsType {
     pub fn is_btrfs(&self) -> bool {
         matches!(self, FsType::Btrfs(_))
     }
+
+    /// Returns true if the filesystem is used on top of LVM, e.g. ext4 or XFS.
+    pub fn is_lvm(&self) -> bool {
+        matches!(self, FsType::Ext4 | FsType::Xfs)
+    }
 }
 
 impl fmt::Display for FsType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use FsType::*;
+        // Values displayed to the user in the installer UI
         match self {
-            Ext4 => write!(f, "ext4"),
-            Xfs => write!(f, "XFS"),
-            Zfs(level) => write!(f, "ZFS ({level})"),
-            Btrfs(level) => write!(f, "Btrfs ({level})"),
+            FsType::Ext4 => write!(f, "ext4"),
+            FsType::Xfs => write!(f, "XFS"),
+            FsType::Zfs(level) => write!(f, "ZFS ({level})"),
+            FsType::Btrfs(level) => write!(f, "BTRFS ({level})"),
         }
     }
 }
+
+impl Serialize for FsType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // These values must match exactly what the low-level installer expects
+        let value = match self {
+            // proxinstall::$fssetup
+            FsType::Ext4 => "ext4",
+            FsType::Xfs => "xfs",
+            // proxinstall::get_zfs_raid_setup()
+            FsType::Zfs(level) => &format!("zfs ({level})"),
+            // proxinstall::get_btrfs_raid_setup()
+            FsType::Btrfs(level) => &format!("btrfs ({level})"),
+        };
+
+        serializer.collect_str(value)
+    }
+}
+
+impl FromStr for FsType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ext4" => Ok(FsType::Ext4),
+            "xfs" => Ok(FsType::Xfs),
+            "zfs (RAID0)" => Ok(FsType::Zfs(ZfsRaidLevel::Raid0)),
+            "zfs (RAID1)" => Ok(FsType::Zfs(ZfsRaidLevel::Raid1)),
+            "zfs (RAID10)" => Ok(FsType::Zfs(ZfsRaidLevel::Raid10)),
+            "zfs (RAIDZ-1)" => Ok(FsType::Zfs(ZfsRaidLevel::RaidZ)),
+            "zfs (RAIDZ-2)" => Ok(FsType::Zfs(ZfsRaidLevel::RaidZ2)),
+            "zfs (RAIDZ-3)" => Ok(FsType::Zfs(ZfsRaidLevel::RaidZ3)),
+            "btrfs (RAID0)" => Ok(FsType::Btrfs(BtrfsRaidLevel::Raid0)),
+            "btrfs (RAID1)" => Ok(FsType::Btrfs(BtrfsRaidLevel::Raid1)),
+            "btrfs (RAID10)" => Ok(FsType::Btrfs(BtrfsRaidLevel::Raid10)),
+            _ => Err(format!("Could not find file system: {s}")),
+        }
+    }
+}
+
+serde_plain::derive_deserialize_from_fromstr!(FsType, "valid filesystem");
 
 #[derive(Clone, Debug)]
 pub struct LvmBootdiskOptions {
@@ -102,10 +138,40 @@ impl LvmBootdiskOptions {
     }
 }
 
+/// See the accompanying mount option in btrfs(5).
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all(deserialize = "lowercase"))]
+pub enum BtrfsCompressOption {
+    On,
+    #[default]
+    Off,
+    Zlib,
+    Lzo,
+    Zstd,
+}
+
+impl fmt::Display for BtrfsCompressOption {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", format!("{self:?}").to_lowercase())
+    }
+}
+
+impl From<&BtrfsCompressOption> for String {
+    fn from(value: &BtrfsCompressOption) -> Self {
+        value.to_string()
+    }
+}
+
+pub const BTRFS_COMPRESS_OPTIONS: &[BtrfsCompressOption] = {
+    use BtrfsCompressOption::*;
+    &[On, Off, Zlib, Lzo, Zstd]
+};
+
 #[derive(Clone, Debug)]
 pub struct BtrfsBootdiskOptions {
     pub disk_size: f64,
     pub selected_disks: Vec<usize>,
+    pub compress: BtrfsCompressOption,
 }
 
 impl BtrfsBootdiskOptions {
@@ -115,12 +181,13 @@ impl BtrfsBootdiskOptions {
         Self {
             disk_size: disk.size,
             selected_disks: (0..disks.len()).collect(),
+            compress: BtrfsCompressOption::default(),
         }
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(rename_all(deserialize = "lowercase"))]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ZfsCompressOption {
     #[default]
     On,
@@ -132,11 +199,7 @@ pub enum ZfsCompressOption {
     Zstd,
 }
 
-impl fmt::Display for ZfsCompressOption {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", format!("{self:?}").to_lowercase())
-    }
-}
+serde_plain::derive_display_from_serialize!(ZfsCompressOption);
 
 impl From<&ZfsCompressOption> for String {
     fn from(value: &ZfsCompressOption) -> Self {
@@ -149,7 +212,7 @@ pub const ZFS_COMPRESS_OPTIONS: &[ZfsCompressOption] = {
     &[On, Off, Lzjb, Lz4, Zle, Gzip, Zstd]
 };
 
-#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ZfsChecksumOption {
     #[default]
@@ -158,11 +221,7 @@ pub enum ZfsChecksumOption {
     Sha256,
 }
 
-impl fmt::Display for ZfsChecksumOption {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", format!("{self:?}").to_lowercase())
-    }
-}
+serde_plain::derive_display_from_serialize!(ZfsChecksumOption);
 
 impl From<&ZfsChecksumOption> for String {
     fn from(value: &ZfsChecksumOption) -> Self {
@@ -214,7 +273,8 @@ impl ZfsBootdiskOptions {
 /// The default ZFS maximum ARC size in MiB for this system.
 fn default_zfs_arc_max(product: ProxmoxProduct, total_memory: usize) -> usize {
     if product != ProxmoxProduct::PVE {
-        // Use ZFS default for non-PVE
+        // For products other the PVE, just let ZFS decide on its own. Setting `0`
+        // causes the installer to skip writing the `zfs_arc_max` module parameter.
         0
     } else {
         ((total_memory as f64) / 10.)
@@ -401,6 +461,28 @@ impl NetworkOptions {
             Fqdn::from(&format!("{}.{}", default_hostname, Self::DEFAULT_DOMAIN)).unwrap()
         })
     }
+}
+
+/// Validates an email address using the regex for <input type="email" /> elements
+/// as defined in the HTML specification [0].
+/// Using that /should/ cover all possible cases that are encountered in the wild.
+///
+/// It additionally checks whether the email our default email placeholder value.
+///
+/// [0] https://html.spec.whatwg.org/multipage/input.html#valid-e-mail-address
+pub fn email_validate(email: &str) -> Result<()> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$").unwrap()
+    });
+
+    if !re.is_match(email) {
+        bail!("Email does not look like a valid address (user@domain.tld)")
+    } else if email == crate::EMAIL_DEFAULT_PLACEHOLDER {
+        bail!("Invalid (default) email address")
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

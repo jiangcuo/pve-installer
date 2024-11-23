@@ -11,7 +11,7 @@ use Proxmox::Log;
 use Proxmox::Install::ISOEnv;
 use Proxmox::Sys::Net;
 
-my sub parse_kernel_cmdline {
+sub parse_kernel_cmdline {
     my ($cfg) = @_;
 
     my $cmdline = Proxmox::Install::RunEnv::get('kernel_cmdline');
@@ -43,10 +43,13 @@ my sub parse_kernel_cmdline {
 	}
     }
 
-    $cmdline =~ s/(?:BOOT_IMAGE|root|ramdisk_size|splash|vga)=\S+\s?//gi;
-    $cmdline =~ s/ro|rw|quiet|proxdebug|proxtui|nomodeset//gi;
+    my @filtered = grep {
+	$_ !~ m/^(BOOT_IMAGE|root|ramdisk_size|splash|vga)=\S+$/ &&
+	$_ !~ m/^(ro|rw|quiet)$/ &&
+	$_ !~ m/^(prox(debug|tui|auto)|proxmox-\S+)$/
+    } split(/\s+/, $cmdline);
 
-    $cfg->{target_cmdline}= $cmdline;
+    $cfg->{target_cmdline} = join(' ', @filtered);
 
     return $cfg;
 }
@@ -79,6 +82,9 @@ my sub init_cfg {
 	    copies => 1,
 	    arc_max => Proxmox::Install::RunEnv::default_zfs_arc_max(), # in MiB
 	},
+	btrfs_opts => {
+	    compress => 'off',
+	},
 	# TODO: single disk selection config
 	target_hd => undef,
 	disk_selection => {},
@@ -105,6 +111,14 @@ my sub init_cfg {
 	gateway => undef,
 	dns => undef,
 	target_cmdline => undef,
+
+	# proxmox-first-boot setup
+	first_boot => {
+	    enabled => 0,
+	    # Must be kept in sync with proxmox_auto_installer::answer::FirstBootHookServiceOrdering
+	    # and the service files in the proxmox-first-boot package
+	    ordering_target => 'multi-user', # one of `network-pre`, `network-online` or `multi-user`
+	},
     };
 
     $initial = parse_kernel_cmdline($initial);
@@ -171,6 +185,18 @@ sub get_zfs_opt {
     my ($k) = @_;
     my $zfs_opts = get('zfs_opts');
     return defined($k) ? $zfs_opts->{$k} : $zfs_opts;
+}
+
+sub set_btrfs_opt {
+    my ($k, $v) = @_;
+    my $opts = get('btrfs_opts');
+    croak "unknown btrfs opts key '$k'" if !exists($opts->{$k});
+    $opts->{$k} = $v;
+}
+sub get_btrfs_opt {
+    my ($k) = @_;
+    my $opts = get('btrfs_opts');
+    return defined($k) ? $opts->{$k} : $opts;
 }
 
 sub set_target_hd { set_key('target_hd', $_[0]); }
@@ -260,5 +286,17 @@ sub get_target_cmdline { return get('target_cmdline'); }
 
 sub set_existing_storage_auto_rename { set_key('existing_storage_auto_rename', $_[0]); }
 sub get_existing_storage_auto_rename { return get('existing_storage_auto_rename'); }
+
+sub set_first_boot_opt {
+    my ($k, $v) = @_;
+    my $opts = get('first_boot');
+    croak "unknown first boot override key '$k'" if !exists($opts->{$k});
+    $opts->{$k} = $v;
+}
+sub get_first_boot_opt {
+    my ($k) = @_;
+    my $opts = get('first_boot');
+    return defined($k) ? $opts->{$k} : $opts;
+}
 
 1;

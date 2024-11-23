@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use log::info;
+use serde::Serialize;
 use std::{
     fs::{self, read_to_string},
     process::Command,
@@ -27,6 +28,67 @@ static ANSWER_CERT_FP_SUBDOMAIN: &str = "proxmox-auto-installer-cert-fingerprint
 static DHCP_URL_OPTION: &str = "proxmox-auto-installer-manifest-url";
 static DHCP_CERT_FP_OPTION: &str = "proxmox-auto-installer-cert-fingerprint";
 static DHCP_LEASE_FILE: &str = "/var/lib/dhcp/dhclient.leases";
+
+/// Metadata of the HTTP POST payload, such as schema version of the document.
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct HttpFetchInfoSchema {
+    /// major.minor version describing the schema version of this document, in a semanticy-version
+    /// way.
+    ///
+    /// major: Incremented for incompatible/breaking API changes, e.g. removing an existing
+    /// field.
+    /// minor: Incremented when adding functionality in a backwards-compatible matter, e.g.
+    /// adding a new field.
+    version: String,
+}
+
+impl HttpFetchInfoSchema {
+    const SCHEMA_VERSION: &str = "1.0";
+}
+
+impl Default for HttpFetchInfoSchema {
+    fn default() -> Self {
+        Self {
+            version: Self::SCHEMA_VERSION.to_owned(),
+        }
+    }
+}
+
+/// All data sent as request payload with the answerfile fetch POST request.
+///
+/// NOTE: The format is versioned through `schema.version` (`$schema.version` in the
+/// resulting JSON), ensure you update it when this struct or any of its members gets modified.
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct HttpFetchPayload {
+    /// Metadata for the answerfile fetch payload
+    // This field is prefixed by `$` on purpose, to indicate that it is document metadata and not
+    // part of the actual content itself. (E.g. JSON Schema uses a similar naming scheme)
+    #[serde(rename = "$schema")]
+    schema: HttpFetchInfoSchema,
+    /// Information about the running system, flattened into this structure directly.
+    #[serde(flatten)]
+    sysinfo: SysInfo,
+}
+
+impl HttpFetchPayload {
+    /// Retrieves the required information from the system and constructs the
+    /// full payload including meta data.
+    fn get() -> Result<Self> {
+        Ok(Self {
+            schema: HttpFetchInfoSchema::default(),
+            sysinfo: SysInfo::get()?,
+        })
+    }
+
+    /// Retrieves the required information from the system and constructs the
+    /// full payload including meta data, serialized as JSON.
+    pub fn as_json() -> Result<String> {
+        let info = Self::get()?;
+        Ok(serde_json::to_string(&info)?)
+    }
+}
 
 pub struct FetchFromHTTP;
 
@@ -65,9 +127,11 @@ impl FetchFromHTTP {
         }
 
         info!("Gathering system information.");
-        let payload = SysInfo::as_json()?;
+        let payload = HttpFetchPayload::as_json()?;
+
         info!("Sending POST request to '{answer_url}'.");
-        let answer = http_post::call(answer_url, fingerprint.as_deref(), payload)?;
+        let answer =
+            proxmox_installer_common::http::post(&answer_url, fingerprint.as_deref(), payload)?;
         Ok(answer)
     }
 
@@ -177,102 +241,5 @@ impl FetchFromHTTP {
     fn strip_dhcp_option(value: Option<&str>) -> Option<String> {
         // value is expected to be in format: "value";
         value.map(|value| String::from(&value[1..value.len() - 2]))
-    }
-}
-
-mod http_post {
-    use anyhow::Result;
-    use rustls::ClientConfig;
-    use sha2::{Digest, Sha256};
-    use std::sync::Arc;
-    use ureq::{Agent, AgentBuilder};
-
-    /// Issues a POST request with the payload (JSON). Optionally a SHA256 fingerprint can be used to
-    /// check the cert against it, instead of the regular cert validation.
-    /// To gather the sha256 fingerprint you can use the following command:
-    /// ```no_compile
-    /// openssl s_client -connect <host>:443 < /dev/null 2>/dev/null | openssl x509 -fingerprint -sha256  -noout -in /dev/stdin
-    /// ```
-    ///
-    /// # Arguemnts
-    /// * `url` - URL to call
-    /// * `fingerprint` - SHA256 cert fingerprint if certificate pinning should be used. Optional.
-    /// * `payload` - The payload to send to the server. Expected to be a JSON formatted string.
-    pub fn call(url: String, fingerprint: Option<&str>, payload: String) -> Result<String> {
-        let answer;
-
-        if let Some(fingerprint) = fingerprint {
-            let tls_config = ClientConfig::builder()
-                .with_safe_defaults()
-                .with_custom_certificate_verifier(VerifyCertFingerprint::new(fingerprint)?)
-                .with_no_client_auth();
-
-            let agent: Agent = AgentBuilder::new().tls_config(Arc::new(tls_config)).build();
-
-            answer = agent
-                .post(&url)
-                .set("Content-type", "application/json; charset=utf-8")
-                .send_string(&payload)?
-                .into_string()?;
-        } else {
-            let mut roots = rustls::RootCertStore::empty();
-            for cert in rustls_native_certs::load_native_certs()? {
-                roots.add(&rustls::Certificate(cert.0)).unwrap();
-            }
-
-            let tls_config = rustls::ClientConfig::builder()
-                .with_safe_defaults()
-                .with_root_certificates(roots)
-                .with_no_client_auth();
-
-            let agent = AgentBuilder::new()
-                .tls_connector(Arc::new(native_tls::TlsConnector::new()?))
-                .tls_config(Arc::new(tls_config))
-                .build();
-            answer = agent
-                .post(&url)
-                .set("Content-type", "application/json; charset=utf-8")
-                .timeout(std::time::Duration::from_secs(60))
-                .send_string(&payload)?
-                .into_string()?;
-        }
-        Ok(answer)
-    }
-
-    struct VerifyCertFingerprint {
-        cert_fingerprint: Vec<u8>,
-    }
-
-    impl VerifyCertFingerprint {
-        fn new<S: AsRef<str>>(cert_fingerprint: S) -> Result<std::sync::Arc<Self>> {
-            let cert_fingerprint = cert_fingerprint.as_ref();
-            let sanitized = cert_fingerprint.replace(':', "");
-            let decoded = hex::decode(sanitized)?;
-            Ok(std::sync::Arc::new(Self {
-                cert_fingerprint: decoded,
-            }))
-        }
-    }
-
-    impl rustls::client::ServerCertVerifier for VerifyCertFingerprint {
-        fn verify_server_cert(
-            &self,
-            end_entity: &rustls::Certificate,
-            _intermediates: &[rustls::Certificate],
-            _server_name: &rustls::ServerName,
-            _scts: &mut dyn Iterator<Item = &[u8]>,
-            _ocsp_response: &[u8],
-            _now: std::time::SystemTime,
-        ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-            let mut hasher = Sha256::new();
-            hasher.update(end_entity);
-            let result = hasher.finalize();
-
-            if result.as_slice() == self.cert_fingerprint {
-                Ok(rustls::client::ServerCertVerified::assertion())
-            } else {
-                Err(rustls::Error::General("Fingerprint did not match!".into()))
-            }
-        }
     }
 }

@@ -166,7 +166,7 @@ export PREVLEVEL=N
 mkdir -p /dev/shm
 mount -t tmpfs tmpfs /dev/shm
 
-# allow pseudo terminals for debuggin in X
+# allow pseudo terminals for debugging in X
 mkdir -p /dev/pts
 mount -vt devpts devpts /dev/pts -o gid=5,mode=620
 
@@ -190,7 +190,7 @@ if command -v dbus-daemon; then
     mkdir /run/dbus
     dbus-daemon --system --syslog-only
 
-    if [ $proxdebug -ne 0 ]; then # FIXME: better intergration, e.g., use iwgtk?
+    if [ $proxdebug -ne 0 ]; then # FIXME: better integration, e.g., use iwgtk?
         handle_wireless # no-op if not wireless dev is found
     fi
 fi
@@ -253,7 +253,14 @@ elif [ $start_auto_installer -ne 0 ]; then
         debugsh || true
     fi
     echo "Starting automatic installation"
-    /usr/bin/proxmox-auto-installer </run/automatic-installer-answers
+
+    if /usr/bin/proxmox-auto-installer </run/automatic-installer-answers; then
+        if ! /usr/bin/proxmox-post-hook </run/automatic-installer-answers; then
+            echo "post installation hook failed to execute."
+            echo "waiting 30s to allow gathering the error before reboot."
+            sleep 30
+        fi
+    fi
 else
     echo "Starting the installer GUI - see tty2 (CTRL+ALT+F2) for any errors..."
     xinit -- -dpi "$DPI" -s 0 >/dev/tty2 2>&1

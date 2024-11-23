@@ -16,6 +16,23 @@ mod fetch_plugins;
 static LOGGER: AutoInstLogger = AutoInstLogger;
 static AUTOINST_MODE_FILE: &str = "/cdrom/auto-installer-mode.toml";
 
+const CLI_USAGE_HELPTEXT: &str = concat!(
+    "Usage: ",
+    env!("CARGO_BIN_NAME"),
+    " <command> <additional parameters..>
+
+Commands:
+  iso         Fetch the builtin answer file from the ISO
+  http        Fetch the answer file via HTTP(S)
+              Additional parameters: [<http-url>] [<tls-cert-fingerprint>]
+  partition   Fetch the answer file from a mountable partition
+              Additional parameters: [<partition-label>]
+
+Options:
+  -h, --help  Print this help menu
+"
+);
+
 pub fn init_log() -> Result<()> {
     AutoInstLogger::init("/tmp/fetch_answer.log")?;
     log::set_logger(&LOGGER)
@@ -33,10 +50,12 @@ fn fetch_answer(install_settings: &AutoInstSettings) -> Result<String> {
                 Err(err) => info!("Fetching answer file from ISO failed: {err}"),
             }
         }
-        FetchAnswerFrom::Partition => match FetchFromPartition::get_answer() {
-            Ok(answer) => return Ok(answer),
-            Err(err) => info!("Fetching answer file from partition failed: {err}"),
-        },
+        FetchAnswerFrom::Partition => {
+            match FetchFromPartition::get_answer(&install_settings.partition_label) {
+                Ok(answer) => return Ok(answer),
+                Err(err) => info!("Fetching answer file from partition failed: {err}"),
+            }
+        }
         FetchAnswerFrom::Http => match FetchFromHTTP::get_answer(&install_settings.http) {
             Ok(answer) => return Ok(answer),
             Err(err) => info!("Fetching answer file via HTTP failed: {err}"),
@@ -46,23 +65,36 @@ fn fetch_answer(install_settings: &AutoInstSettings) -> Result<String> {
 }
 
 fn settings_from_cli_args(args: &[String]) -> Result<AutoInstSettings> {
-    // TODO: this was done in a bit of a hurry, needs tidying up
     let mode = match args[1].to_lowercase().as_str() {
         "iso" => FetchAnswerFrom::Iso,
         "http" => FetchAnswerFrom::Http,
         "partition" => FetchAnswerFrom::Partition,
-        "-h" | "--help" => bail!(
-            "usage: {} <http|iso|partition> [<http-url>] [<tls-cert-fingerprint>]",
-            args[0]
-        ),
+        "-h" | "--help" => {
+            eprintln!("{}", CLI_USAGE_HELPTEXT);
+            bail!("invalid usage");
+        }
         _ => bail!("failed to parse fetch-from argument, not one of 'http', 'iso', or 'partition'"),
     };
-    if args.len() > 4 {
-    } else if args.len() > 2 && mode != FetchAnswerFrom::Http {
-        bail!("only 'http' fetch-from mode supports additional url and cert-fingerprint mode");
-    }
+
+    match mode {
+        FetchAnswerFrom::Iso if args.len() > 2 => {
+            bail!("'iso' mode does not take any additional arguments")
+        }
+        FetchAnswerFrom::Http if args.len() > 4 => {
+            bail!("'http' mode takes at most 2 additional arguments")
+        }
+        FetchAnswerFrom::Partition if args.len() > 3 => {
+            bail!("'partition' mode takes at most 1 additional argument")
+        }
+        _ => {}
+    };
+
     Ok(AutoInstSettings {
         mode,
+        partition_label: args
+            .get(2)
+            .ok_or(format_err!("partition label expected"))
+            .cloned()?,
         http: HttpOptions {
             url: args.get(2).cloned(),
             cert_fingerprint: args.get(3).cloned(),

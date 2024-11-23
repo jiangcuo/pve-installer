@@ -8,18 +8,16 @@ use std::{
 
 static ANSWER_FILE: &str = "answer.toml";
 static ANSWER_MP: &str = "/mnt/answer";
-// FAT can only handle 11 characters, so shorten Automated Installer Source to AIS
-static PARTLABEL: &str = "proxmox-ais";
 static DISK_BY_ID_PATH: &str = "/dev/disk/by-label";
 
 pub struct FetchFromPartition;
 
 impl FetchFromPartition {
     /// Returns the contents of the answer file
-    pub fn get_answer() -> Result<String> {
+    pub fn get_answer(part_label: &str) -> Result<String> {
         info!("Checking for answer file on partition.");
 
-        let mut mount_path = PathBuf::from(mount_proxmoxinst_part()?);
+        let mut mount_path = PathBuf::from(mount_proxmoxinst_part(part_label)?);
         mount_path.push(ANSWER_FILE);
         let answer = fs::read_to_string(mount_path)
             .map_err(|err| format_err!("failed to read answer file - {err}"))?;
@@ -31,7 +29,7 @@ impl FetchFromPartition {
 }
 
 fn path_exists_logged(file_name: &str, search_path: &str) -> Option<PathBuf> {
-    let path = Path::new(search_path).join(&file_name);
+    let path = Path::new(search_path).join(file_name);
     info!("Testing partition search path {path:?}");
     match path.try_exists() {
         Ok(true) => Some(path),
@@ -43,35 +41,63 @@ fn path_exists_logged(file_name: &str, search_path: &str) -> Option<PathBuf> {
     }
 }
 
-/// Searches for upper and lower case existence of the partlabel in the search_path
+fn encode_partlabel(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| {
+            if (' '..='~').contains(&c) && !(c.is_ascii_alphanumeric() || "#+-.:=@_".contains(c)) {
+                format!("\\x{:02x}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+/// Searches for the exact case, upper and finally lower case existence of the partlabel in the
+/// search_path, in that order.
+///
+/// While some filesystems - such as FAT(32) - might not supported/allow mixed-case labels, some
+/// implementations still handle them correctly, such as Linux. Thus, also search for that variant
+/// first.
 ///
 /// # Arguments
-/// * `partlabel_source` - Partition Label, used as upper and lower case
+/// * `partlabel_source` - Partition Label, used for matching, in the exact, upper and lower case
 /// * `search_path` - Path where to search for the partition label
 fn scan_partlabels(partlabel: &str, search_path: &str) -> Result<PathBuf> {
+    let partlabel_enc = encode_partlabel(partlabel);
+    if let Some(path) = path_exists_logged(&partlabel_enc, search_path) {
+        info!("Found partition with label '{partlabel}'");
+        return Ok(path);
+    }
+
     let partlabel_upper_case = partlabel.to_uppercase();
-    if let Some(path) = path_exists_logged(&partlabel_upper_case, search_path) {
+    let partlabel_upper_case_enc = encode_partlabel(&partlabel_upper_case);
+    if let Some(path) = path_exists_logged(&partlabel_upper_case_enc, search_path) {
         info!("Found partition with label '{partlabel_upper_case}'");
         return Ok(path);
     }
 
     let partlabel_lower_case = partlabel.to_lowercase();
-    if let Some(path) = path_exists_logged(&partlabel_lower_case, search_path) {
+    let partlabel_lower_case_enc = encode_partlabel(&partlabel_lower_case);
+    if let Some(path) = path_exists_logged(&partlabel_lower_case_enc, search_path) {
         info!("Found partition with label '{partlabel_lower_case}'");
         return Ok(path);
     }
 
-    bail!("Could not detect upper or lower case labels for '{partlabel}'");
+    bail!("Could not find partition for label '{partlabel}'");
 }
 
-/// Will search and mount a partition/FS labeled PARTLABEL (proxmox-ais) in lower or uppercase
-/// to ANSWER_MP
-fn mount_proxmoxinst_part() -> Result<String> {
+/// Searches for a partition/filesystem labeled `part_label` mounts it to `ANSWER_MP`, if found.
+///
+/// # Arguments
+///   * `partlabel` - Partition Label, used for matching, in the exact, upper and lower case
+fn mount_proxmoxinst_part(part_label: &str) -> Result<String> {
     if let Ok(true) = check_if_mounted(ANSWER_MP) {
         info!("Skipping: '{ANSWER_MP}' is already mounted.");
         return Ok(ANSWER_MP.into());
     }
-    let part_path = scan_partlabels(PARTLABEL, DISK_BY_ID_PATH)?;
+    let part_path = scan_partlabels(part_label, DISK_BY_ID_PATH)?;
     info!("Mounting partition at {ANSWER_MP}");
     // create dir for mountpoint
     create_dir_all(ANSWER_MP)?;

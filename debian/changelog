@@ -1,3 +1,101 @@
+proxmox-installer (8.3.3) bookworm; urgency=medium
+
+  * common: allow lowercase and uppercase zfs raid levels
+
+  * common: allow lowercase and uppercase btrfs raid levels
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 20 Nov 2024 19:50:33 +0100
+
+proxmox-installer (8.3.2) bookworm; urgency=medium
+
+  * fetch-answer: encode unsafe characters in partition label
+
+  * first-boot: multi-user: start after product-specific API proxy
+
+  * install: continue reboot after 30s if post-hook fails
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 19 Nov 2024 18:45:53 +0100
+
+proxmox-installer (8.3.1) bookworm; urgency=medium
+
+  * Improve "For more information" paragraph in GUI info bulletin point
+
+  * common: fix deserialization of install config to avoid failing if a
+    post-installation webhook is configured.
+
+  * LVM creation: warn about skipping data LV create if maxvz is set <= 4 GiB
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 19 Nov 2024 14:30:47 +0100
+
+proxmox-installer (8.3.0) bookworm; urgency=medium
+
+  * fix #5579: auto-installer: add optional first-boot hook script to be
+    executed when the freshly installed system is started up the first time.
+    One can choose when the script should be started w.r.t. systemd unit
+    ordering, either before the network starts to get configured to allow
+    adapting or even bootstrap the network settings themselves, then once
+    netowrking is available, or once the system is fully booted up.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 18 Nov 2024 22:38:31 +0100
+
+proxmox-installer (8.2.8) bookworm; urgency=medium
+
+  * auto-installer: add default value for partition-label to fix regression
+    from new override mechanism
+
+  * install: show hint when making the system bootable that it might take a
+    while if multiple disks need to be processed to avoid that users think the
+    installer is stuck.
+
+  * install: zfs: rename pre-existing pool named `rpool` also if in degraded
+    state for best-effort to avoid that the user needs to do so after the
+    installation from the limited initrd environment.
+
+  * fetch-answer, post-hook: rename $format-info to the more widely used
+    $schema, now that we still can easily do so without any backwards compat
+    implications.
+
+ -- Proxmox Support Team <support@proxmox.com>  Sun, 17 Nov 2024 17:56:01 +0100
+
+proxmox-installer (8.2.7) bookworm; urgency=medium
+
+  * tui: boot disk: align btrfs dialog interface with ZFS equivalent
+
+  * tui: boot disk: use tabbed view for disk options on small screens
+
+  * auto-installer: fix cut-off answer-request charset to state utf-8
+
+  * low-level: install: check for already-existing `rpool` on install
+
+  * low-level: change root password option to contain either plain-text or hash
+    and add new `global.root_password_hashed` answer option to the
+    auto-installer
+
+  * tui: show background header on fatal setup error
+
+  * tui: use email regex from HTML specification for validation
+
+  * installer-common: do not drop `nomodeset` from target kernel cmdline
+
+  * fetch-answer: allow one to override the partition label the answer file
+    should be searched on through the fetch-config file that is setup when
+    preparing an ISO. This can help with some limited BMCs/IPMIs where one
+    might not be able to control the partition label.
+
+  * fix #5250: allow one to set the compress option for BTRFS
+
+  * expose ZFS ARC size override setting for all products, not just Proxmox VE
+
+  * fix #5536: auto-installer: add `post-installation-webhook` section to
+    answer file. When configured, the installer will send a HTTP notification
+    to the specified URL after the installation finished successfully.
+
+  * add $format-info meta object to fetch-answer and post-hook requests,
+    allowing one to tell when new features can be used in a backward
+    compatible way
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 14 Nov 2024 22:05:11 +0100
+
 proxmox-installer (8.2.6) bookworm; urgency=medium
 
   * assistant: ensure the partition UUID stay the same when preparing an ISO

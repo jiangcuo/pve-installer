@@ -1,10 +1,14 @@
+use anyhow::{format_err, Result};
 use clap::ValueEnum;
 use proxmox_installer_common::{
-    options::{BtrfsRaidLevel, FsType, ZfsChecksumOption, ZfsCompressOption, ZfsRaidLevel},
+    options::{
+        BtrfsCompressOption, BtrfsRaidLevel, FsType, ZfsChecksumOption, ZfsCompressOption,
+        ZfsRaidLevel,
+    },
     utils::{CidrAddress, Fqdn},
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, net::IpAddr};
+use std::{collections::BTreeMap, io::BufRead, net::IpAddr};
 
 // BTreeMap is used to store filters as the order of the filters will be stable, compared to
 // storing them in a HashMap
@@ -16,6 +20,23 @@ pub struct Answer {
     pub network: Network,
     #[serde(rename = "disk-setup")]
     pub disks: Disks,
+    #[serde(default)]
+    pub post_installation_webhook: Option<PostNotificationHookInfo>,
+    #[serde(default)]
+    pub first_boot: Option<FirstBootHookInfo>,
+}
+
+impl Answer {
+    pub fn try_from_reader(reader: impl BufRead) -> Result<Self> {
+        let mut buffer = String::new();
+        let lines = reader.lines();
+        for line in lines {
+            buffer.push_str(&line.unwrap());
+            buffer.push('\n');
+        }
+
+        toml::from_str(&buffer).map_err(|err| format_err!("Failed parsing answer file: {err}"))
+    }
 }
 
 #[derive(Clone, Deserialize, Debug)]
@@ -32,6 +53,72 @@ pub struct Global {
     pub reboot_on_error: bool,
     #[serde(default)]
     pub root_ssh_keys: Vec<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct PostNotificationHookInfo {
+    /// URL to send a POST request to
+    pub url: String,
+    /// SHA256 cert fingerprint if certificate pinning should be used.
+    pub cert_fingerprint: Option<String>,
+}
+
+/// Possible sources for the optional first-boot hook script/executable file.
+#[derive(Clone, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum FirstBootHookSourceMode {
+    /// Fetch the executable file from an URL, specified in the parent.
+    FromUrl,
+    /// The executable file has been baked into the ISO at a known location,
+    /// and should be retrieved from there.
+    FromIso,
+}
+
+/// Possible orderings for the `proxmox-first-boot` systemd service.
+///
+/// Determines the final value of `Unit.Before` and `Unit.Wants` in the service
+/// file.
+// Must be kept in sync with Proxmox::Install::Config and the service files in the
+// proxmox-first-boot package.
+#[derive(Clone, Default, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum FirstBootHookServiceOrdering {
+    /// Needed for bringing up the network itself, runs before any networking is attempted.
+    BeforeNetwork,
+    /// Network needs to be already online, runs after networking was brought up.
+    NetworkOnline,
+    /// Runs after the system has successfully booted up completely.
+    #[default]
+    FullyUp,
+}
+
+impl FirstBootHookServiceOrdering {
+    /// Maps the enum to the appropriate systemd target name, without the '.target' suffix.
+    pub fn as_systemd_target_name(&self) -> &str {
+        match self {
+            FirstBootHookServiceOrdering::BeforeNetwork => "network-pre",
+            FirstBootHookServiceOrdering::NetworkOnline => "network-online",
+            FirstBootHookServiceOrdering::FullyUp => "multi-user",
+        }
+    }
+}
+
+/// Describes from where to fetch the first-boot hook script, either being baked into the ISO or
+/// from a URL.
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct FirstBootHookInfo {
+    /// Mode how to retrieve the first-boot executable file, either from an URL or from the ISO if
+    /// it has been baked-in.
+    pub source: FirstBootHookSourceMode,
+    /// Determines the service order when the hook will run on first boot.
+    #[serde(default)]
+    pub ordering: FirstBootHookServiceOrdering,
+    /// Retrieve the post-install script from a URL, if source == "from-url".
+    pub url: Option<String>,
+    /// SHA256 cert fingerprint if certificate pinning should be used, if source == "from-url".
+    pub cert_fingerprint: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Debug, Default, PartialEq)]
@@ -270,6 +357,7 @@ pub struct LvmOptions {
 pub struct BtrfsOptions {
     pub hdsize: Option<f64>,
     pub raid: Option<BtrfsRaidLevel>,
+    pub compress: Option<BtrfsCompressOption>,
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]

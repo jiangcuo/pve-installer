@@ -10,3 +10,17 @@ export BUILD_MODE=release
 
 override_dh_missing:
 	dh_missing --fail-missing
+
+override_dh_strip:
+	dh_strip
+	for exe in $$(find \
+	    debian/proxmox-installer \
+	    debian/proxmox-auto-install-assistant \
+	    -executable -type f); do \
+	  debian/scripts/elf-strip-unused-dependencies.sh "$$exe" || true; \
+	done
+
+override_dh_installsystemd:
+	# disables all services by default, as we enable them ourselves in
+	# the installer
+	dh_installsystemd --no-stop-on-upgrade --no-start --no-enable

@@ -1,11 +1,10 @@
 use anyhow::{bail, format_err, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use glob::Pattern;
-use regex::Regex;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
-    fs,
+    fmt, fs,
     io::{self, Read},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -20,6 +19,7 @@ use proxmox_auto_installer::{
         FetchAnswerFrom, HttpOptions,
     },
 };
+use proxmox_installer_common::{FIRST_BOOT_EXEC_MAX_SIZE, FIRST_BOOT_EXEC_NAME};
 
 static PROXMOX_ISO_FLAG: &str = "/auto-installer-capable";
 
@@ -55,7 +55,7 @@ struct CommandDeviceInfo {
 /// Filters support the following syntax:
 /// ?          Match a single character
 /// *          Match any number of characters
-/// [a], [0-9] Specifc character or range of characters
+/// [a], [0-9] Specific character or range of characters
 /// [!a]       Negate a specific character of range
 ///
 /// To avoid globbing characters being interpreted by the shell, use single quotes.
@@ -94,8 +94,7 @@ struct CommandValidateAnswer {
 /// The behavior of how to fetch an answer file must be set with the '--fetch-from' parameter. The
 /// answer file can be:{n}
 /// * integrated into the ISO itself ('iso'){n}
-/// * present on a partition / file-system with the label 'PROXMOX-AIS' (Proxmox
-/// Automated Installer Source) ('partition'){n}
+/// * present on a partition / file-system, matched by its label ('partition'){n}
 /// * requested via an HTTP Post request ('http').
 ///
 /// The URL for the HTTP mode can be defined for the ISO with the '--url' argument. If not present,
@@ -110,6 +109,9 @@ struct CommandValidateAnswer {
 /// to retrieve the URL. For example, the DNS TXT record for the fingerprint will only be used, if
 /// no one was configured with the '--cert-fingerprint' parameter and if the URL was retrieved via
 /// the DNS TXT record.
+///
+/// If the 'partition' mode is used, the '--partition-label' parameter can be used to set the
+/// partition label the auto-installer should search for. This defaults to 'proxmox-ais'.
 #[derive(Args, Debug)]
 struct CommandPrepareISO {
     /// Path to the source ISO to prepare
@@ -141,6 +143,20 @@ struct CommandPrepareISO {
     /// input ISO file.
     #[arg(long)]
     tmp: Option<String>,
+
+    /// Can be used in combination with `--fetch-from partition` to set the partition label
+    /// the auto-installer will search for.
+    // FAT can only handle 11 characters (per specification at least, drivers might allow more),
+    // so shorten "Automated Installer Source" to "AIS" to be safe.
+    #[arg(long, default_value_t = { "proxmox-ais".to_owned() } )]
+    partition_label: String,
+
+    /// Executable file to include, which should be run on the first system boot after the
+    /// installation. Can be used for further bootstrapping the new system.
+    ///
+    /// Must be appropriately enabled in the answer file.
+    #[arg(long)]
+    on_first_boot: Option<PathBuf>,
 }
 
 /// Show the system information that can be used to identify a host.
@@ -193,7 +209,7 @@ fn main() {
         Commands::SystemInfo(args) => show_system_info(args),
     };
     if let Err(err) = res {
-        eprintln!("{err}");
+        eprintln!("Error: {err:?}");
         std::process::exit(1);
     }
 }
@@ -297,6 +313,17 @@ fn prepare_iso(args: &CommandPrepareISO) -> Result<()> {
         bail!("You must set '--fetch-from' to 'iso' to place the answer file directly in the ISO.");
     }
 
+    if let Some(first_boot) = &args.on_first_boot {
+        let metadata = fs::metadata(first_boot)?;
+
+        if metadata.len() > FIRST_BOOT_EXEC_MAX_SIZE.try_into()? {
+            bail!(
+                "Maximum file size for first-boot executable file is {} MiB",
+                FIRST_BOOT_EXEC_MAX_SIZE / 1024 / 1024
+            )
+        }
+    }
+
     if let Some(file) = &args.answer_file {
         println!("Checking provided answer file...");
         parse_answer(file)?;
@@ -323,6 +350,7 @@ fn prepare_iso(args: &CommandPrepareISO) -> Result<()> {
     println!("Preparing ISO...");
     let config = AutoInstSettings {
         mode: args.fetch_from.clone(),
+        partition_label: args.partition_label.clone(),
         http: HttpOptions {
             url: args.url.clone(),
             cert_fingerprint: args.cert_fingerprint.clone(),
@@ -341,6 +369,15 @@ fn prepare_iso(args: &CommandPrepareISO) -> Result<()> {
 
     if let Some(answer_file) = &args.answer_file {
         inject_file_to_iso(&tmp_iso, answer_file, "/answer.toml", &uuid)?;
+    }
+
+    if let Some(first_boot) = &args.on_first_boot {
+        inject_file_to_iso(
+            &tmp_iso,
+            first_boot,
+            &format!("/{FIRST_BOOT_EXEC_NAME}"),
+            &uuid,
+        )?;
     }
 
     println!("Moving prepared ISO to target location...");
@@ -377,7 +414,12 @@ fn final_iso_location(args: &CommandPrepareISO) -> PathBuf {
     target.to_path_buf()
 }
 
-fn inject_file_to_iso(iso: &PathBuf, file: &PathBuf, location: &str, uuid: &String) -> Result<()> {
+fn inject_file_to_iso(
+    iso: impl AsRef<Path> + fmt::Debug,
+    file: &PathBuf,
+    location: &str,
+    uuid: &String,
+) -> Result<()> {
     let result = Command::new("xorriso")
         .arg("-boot_image")
         .arg("any")
@@ -386,7 +428,7 @@ fn inject_file_to_iso(iso: &PathBuf, file: &PathBuf, location: &str, uuid: &Stri
         .arg("uuid")
         .arg(uuid)
         .arg("-dev")
-        .arg(iso)
+        .arg(iso.as_ref())
         .arg("-map")
         .arg(file)
         .arg(location)
@@ -400,10 +442,10 @@ fn inject_file_to_iso(iso: &PathBuf, file: &PathBuf, location: &str, uuid: &Stri
     Ok(())
 }
 
-fn get_iso_uuid(iso: &PathBuf) -> Result<String> {
+fn get_iso_uuid(iso: impl AsRef<Path>) -> Result<String> {
     let result = Command::new("xorriso")
         .arg("-dev")
-        .arg(iso)
+        .arg(iso.as_ref())
         .arg("-report_system_area")
         .arg("cmd")
         .output()?;
@@ -419,7 +461,7 @@ fn get_iso_uuid(iso: &PathBuf) -> Result<String> {
             uuid = line
                 .split(' ')
                 .last()
-                .ok_or_else(|| format_err!("xorriso did behave unexpextedly"))?
+                .ok_or_else(|| format_err!("xorriso did behave unexpectedly"))?
                 .replace('\'', "")
                 .trim()
                 .into();
@@ -430,22 +472,18 @@ fn get_iso_uuid(iso: &PathBuf) -> Result<String> {
 }
 
 fn get_disks() -> Result<BTreeMap<String, BTreeMap<String, String>>> {
-    let unwantend_block_devs = vec![
-        "ram[0-9]*",
-        "loop[0-9]*",
-        "md[0-9]*",
-        "dm-*",
-        "fd[0-9]*",
-        "sr[0-9]*",
+    let unwanted_block_devs = [
+        Pattern::new("ram[0-9]*")?,
+        Pattern::new("loop[0-9]*")?,
+        Pattern::new("md[0-9]*")?,
+        Pattern::new("dm-*")?,
+        Pattern::new("fd[0-9]*")?,
+        Pattern::new("sr[0-9]*")?,
     ];
 
-    // compile Regex here once and not inside the loop
-    let re_disk = Regex::new(r"(?m)^E: DEVTYPE=disk")?;
-    let re_cdrom = Regex::new(r"(?m)^E: ID_CDROM")?;
-    let re_iso9660 = Regex::new(r"(?m)^E: ID_FS_TYPE=iso9660")?;
-
-    let re_name = Regex::new(r"(?m)^N: (.*)$")?;
-    let re_props = Regex::new(r"(?m)^E: ([^=]+)=(.*)$")?;
+    const PROP_DEVTYP_PREFIX: &str = "E: DEVTYPE=";
+    const PROP_CDROM: &str = "E: ID_CDROM";
+    const PROP_ISO9660_FS: &str = "E: ID_FS_TYPE=iso9660";
 
     let mut disks: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
 
@@ -453,13 +491,13 @@ fn get_disks() -> Result<BTreeMap<String, BTreeMap<String, String>>> {
         let entry = entry.unwrap();
         let filename = entry.file_name().into_string().unwrap();
 
-        for p in &unwantend_block_devs {
-            if Pattern::new(p)?.matches(&filename) {
+        for p in &unwanted_block_devs {
+            if p.matches(&filename) {
                 continue 'outer;
             }
         }
 
-        let output = match get_udev_properties(&entry.path()) {
+        let output = match get_udev_properties(entry.path()) {
             Ok(output) => output,
             Err(err) => {
                 eprint!("{err}");
@@ -467,30 +505,27 @@ fn get_disks() -> Result<BTreeMap<String, BTreeMap<String, String>>> {
             }
         };
 
-        if !re_disk.is_match(&output) {
-            continue 'outer;
-        };
-        if re_cdrom.is_match(&output) {
-            continue 'outer;
-        };
-        if re_iso9660.is_match(&output) {
-            continue 'outer;
-        };
-
         let mut name = filename;
-        if let Some(cap) = re_name.captures(&output) {
-            if let Some(res) = cap.get(1) {
-                name = String::from(res.as_str());
-            }
-        }
-
         let mut udev_props: BTreeMap<String, String> = BTreeMap::new();
-
         for line in output.lines() {
-            if let Some(caps) = re_props.captures(line) {
-                let key = String::from(caps.get(1).unwrap().as_str());
-                let value = String::from(caps.get(2).unwrap().as_str());
-                udev_props.insert(key, value);
+            if let Some(prop) = line.strip_prefix(PROP_DEVTYP_PREFIX) {
+                if prop != "disk" {
+                    continue 'outer;
+                }
+            }
+
+            if line.starts_with(PROP_CDROM) || line.starts_with(PROP_ISO9660_FS) {
+                continue 'outer;
+            }
+
+            if let Some(prop) = line.strip_prefix("N: ") {
+                name = prop.to_owned();
+            };
+
+            if let Some(prop) = line.strip_prefix("E: ") {
+                if let Some((key, val)) = prop.split_once('=') {
+                    udev_props.insert(key.to_owned(), val.to_owned());
+                }
             }
         }
 
@@ -500,14 +535,13 @@ fn get_disks() -> Result<BTreeMap<String, BTreeMap<String, String>>> {
 }
 
 fn get_nics() -> Result<BTreeMap<String, BTreeMap<String, String>>> {
-    let re_props = Regex::new(r"(?m)^E: (.*)=(.*)$")?;
     let mut nics: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
 
     let links = get_nic_list()?;
     for link in links {
         let path = format!("/sys/class/net/{link}");
 
-        let output = match get_udev_properties(&PathBuf::from(path)) {
+        let output = match get_udev_properties(PathBuf::from(path)) {
             Ok(output) => output,
             Err(err) => {
                 eprint!("{err}");
@@ -518,10 +552,10 @@ fn get_nics() -> Result<BTreeMap<String, BTreeMap<String, String>>> {
         let mut udev_props: BTreeMap<String, String> = BTreeMap::new();
 
         for line in output.lines() {
-            if let Some(caps) = re_props.captures(line) {
-                let key = String::from(caps.get(1).unwrap().as_str());
-                let value = String::from(caps.get(2).unwrap().as_str());
-                udev_props.insert(key, value);
+            if let Some(prop) = line.strip_prefix("E: ") {
+                if let Some((key, val)) = prop.split_once('=') {
+                    udev_props.insert(key.to_owned(), val.to_owned());
+                }
             }
         }
 
@@ -530,11 +564,11 @@ fn get_nics() -> Result<BTreeMap<String, BTreeMap<String, String>>> {
     Ok(nics)
 }
 
-fn get_udev_properties(path: &PathBuf) -> Result<String> {
+fn get_udev_properties(path: impl AsRef<Path> + fmt::Debug) -> Result<String> {
     let udev_output = Command::new("udevadm")
         .arg("info")
         .arg("--path")
-        .arg(path)
+        .arg(path.as_ref())
         .arg("--query")
         .arg("all")
         .output()?;
@@ -544,8 +578,8 @@ fn get_udev_properties(path: &PathBuf) -> Result<String> {
     Ok(String::from_utf8(udev_output.stdout)?)
 }
 
-fn parse_answer(path: &PathBuf) -> Result<Answer> {
-    let mut file = match fs::File::open(path) {
+fn parse_answer(path: impl AsRef<Path> + fmt::Debug) -> Result<Answer> {
+    let mut file = match fs::File::open(&path) {
         Ok(file) => file,
         Err(err) => bail!("Opening answer file {path:?} failed: {err}"),
     };

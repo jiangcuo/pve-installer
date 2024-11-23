@@ -13,8 +13,8 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     options::{
-        BtrfsRaidLevel, Disk, FsType, ZfsBootdiskOptions, ZfsChecksumOption, ZfsCompressOption,
-        ZfsRaidLevel,
+        BtrfsBootdiskOptions, BtrfsCompressOption, Disk, FsType, ZfsBootdiskOptions,
+        ZfsChecksumOption, ZfsCompressOption,
     },
     utils::CidrAddress,
 };
@@ -166,24 +166,29 @@ pub fn installer_setup(in_test_mode: bool) -> Result<(SetupInfo, LocaleInfo, Run
     } else {
         crate::RUNTIME_DIR.to_owned()
     };
-    let path = PathBuf::from(base_path);
 
+    load_installer_setup_files(base_path)
+}
+
+pub fn load_installer_setup_files(
+    base_path: impl AsRef<Path>,
+) -> Result<(SetupInfo, LocaleInfo, RuntimeInfo), String> {
     let installer_info: SetupInfo = {
-        let mut path = path.clone();
+        let mut path = base_path.as_ref().to_path_buf();
         path.push("iso-info.json");
 
         read_json(&path).map_err(|err| format!("Failed to retrieve setup info: {err}"))?
     };
 
     let locale_info = {
-        let mut path = path.clone();
+        let mut path = base_path.as_ref().to_path_buf();
         path.push("locales.json");
 
         read_json(&path).map_err(|err| format!("Failed to retrieve locale info: {err}"))?
     };
 
     let mut runtime_info: RuntimeInfo = {
-        let mut path = path.clone();
+        let mut path = base_path.as_ref().to_path_buf();
         path.push("run-env-info.json");
 
         read_json(&path)
@@ -193,6 +198,8 @@ pub fn installer_setup(in_test_mode: bool) -> Result<(SetupInfo, LocaleInfo, Run
     runtime_info.disks.sort();
     if runtime_info.disks.is_empty() {
         Err("The installer could not find any supported hard disks.".to_owned())
+    } else if runtime_info.network.interfaces.is_empty() {
+        Err("The installer could not find any supported network interface cards.".to_owned())
     } else {
         Ok((installer_info, locale_info, runtime_info))
     }
@@ -201,9 +208,7 @@ pub fn installer_setup(in_test_mode: bool) -> Result<(SetupInfo, LocaleInfo, Run
 #[derive(Debug, Deserialize, Serialize)]
 pub struct InstallZfsOption {
     pub ashift: usize,
-    #[serde(serialize_with = "serialize_as_display")]
     pub compress: ZfsCompressOption,
-    #[serde(serialize_with = "serialize_as_display")]
     pub checksum: ZfsChecksumOption,
     pub copies: usize,
     pub arc_max: usize,
@@ -221,6 +226,20 @@ impl From<ZfsBootdiskOptions> for InstallZfsOption {
     }
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InstallBtrfsOption {
+    #[serde(serialize_with = "serialize_as_display")]
+    pub compress: BtrfsCompressOption,
+}
+
+impl From<BtrfsBootdiskOptions> for InstallBtrfsOption {
+    fn from(opts: BtrfsBootdiskOptions) -> Self {
+        InstallBtrfsOption {
+            compress: opts.compress,
+        }
+    }
+}
+
 pub fn read_json<T: for<'de> Deserialize<'de>, P: AsRef<Path>>(path: P) -> Result<T, String> {
     let file = File::open(path).map_err(|err| err.to_string())?;
     let reader = BufReader::new(file);
@@ -234,6 +253,14 @@ where
 {
     let val: u32 = Deserialize::deserialize(deserializer)?;
     Ok(val != 0)
+}
+
+fn deserialize_bool_from_int_maybe<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let val: Option<u32> = Deserialize::deserialize(deserializer)?;
+    Ok(val.map(|v| v != 0))
 }
 
 fn deserialize_cczones_map<'de, D>(
@@ -312,6 +339,13 @@ where
     serializer.collect_str(value)
 }
 
+fn serialize_bool_as_u32<S>(value: &bool, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_u32(if *value { 1 } else { 0 })
+}
+
 #[derive(Clone, Deserialize)]
 pub struct RuntimeInfo {
     /// Whether is system was booted in (legacy) BIOS or UEFI mode.
@@ -333,9 +367,13 @@ pub struct RuntimeInfo {
     /// Whether the CPU supports hardware-accelerated virtualization
     #[serde(deserialize_with = "deserialize_bool_from_int")]
     pub hvm_supported: bool,
+
+    /// Whether the system was booted with SecureBoot enabled
+    #[serde(default, deserialize_with = "deserialize_bool_from_int_maybe")]
+    pub secure_boot: Option<bool>,
 }
 
-#[derive(Copy, Clone, Eq, Deserialize, PartialEq)]
+#[derive(Copy, Clone, Eq, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BootType {
     Bios,
@@ -433,6 +471,17 @@ pub struct InstallRootPassword {
     pub hashed: Option<String>,
 }
 
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub struct InstallFirstBootSetup {
+    #[serde(
+        serialize_with = "serialize_bool_as_u32",
+        deserialize_with = "deserialize_bool_from_int"
+    )]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordering_target: Option<String>,
+}
+
 pub fn spawn_low_level_installer(test_mode: bool) -> io::Result<process::Child> {
     let (path, args, envs): (&str, &[&str], Vec<(&str, &str)>) = if test_mode {
         (
@@ -457,10 +506,6 @@ pub fn spawn_low_level_installer(test_mode: bool) -> io::Result<process::Child> 
 pub struct InstallConfig {
     pub autoreboot: usize,
 
-    #[serde(
-        serialize_with = "serialize_fstype",
-        deserialize_with = "deserialize_fs_type"
-    )]
     pub filesys: FsType,
     pub hdsize: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -475,16 +520,12 @@ pub struct InstallConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zfs_opts: Option<InstallZfsOption>,
 
-    #[serde(
-        serialize_with = "serialize_disk_opt",
-        skip_serializing_if = "Option::is_none",
-        // only the 'path' property is serialized -> deserialization is problematic
-        // The information would be present in the 'run-env-info-json', but for now there is no
-        // need for it in any code that deserializes the low-level config. Therefore we are
-        // currently skipping it on deserialization
-        skip_deserializing
-    )]
-    pub target_hd: Option<Disk>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub btrfs_opts: Option<InstallBtrfsOption>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_hd: Option<String>,
+
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub disk_selection: BTreeMap<String, String>,
 
@@ -507,63 +548,6 @@ pub struct InstallConfig {
     pub cidr: CidrAddress,
     pub gateway: IpAddr,
     pub dns: IpAddr,
-}
 
-fn serialize_disk_opt<S>(value: &Option<Disk>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    if let Some(disk) = value {
-        serializer.serialize_str(&disk.path)
-    } else {
-        serializer.serialize_none()
-    }
-}
-
-fn serialize_fstype<S>(value: &FsType, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    use FsType::*;
-    let value = match value {
-        // proxinstall::$fssetup
-        Ext4 => "ext4",
-        Xfs => "xfs",
-        // proxinstall::get_zfs_raid_setup()
-        Zfs(ZfsRaidLevel::Raid0) => "zfs (RAID0)",
-        Zfs(ZfsRaidLevel::Raid1) => "zfs (RAID1)",
-        Zfs(ZfsRaidLevel::Raid10) => "zfs (RAID10)",
-        Zfs(ZfsRaidLevel::RaidZ) => "zfs (RAIDZ-1)",
-        Zfs(ZfsRaidLevel::RaidZ2) => "zfs (RAIDZ-2)",
-        Zfs(ZfsRaidLevel::RaidZ3) => "zfs (RAIDZ-3)",
-        // proxinstall::get_btrfs_raid_setup()
-        Btrfs(BtrfsRaidLevel::Raid0) => "btrfs (RAID0)",
-        Btrfs(BtrfsRaidLevel::Raid1) => "btrfs (RAID1)",
-        Btrfs(BtrfsRaidLevel::Raid10) => "btrfs (RAID10)",
-    };
-
-    serializer.collect_str(value)
-}
-
-pub fn deserialize_fs_type<'de, D>(deserializer: D) -> Result<FsType, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use FsType::*;
-    let de_fs: String = Deserialize::deserialize(deserializer)?;
-
-    match de_fs.as_str() {
-        "ext4" => Ok(Ext4),
-        "xfs" => Ok(Xfs),
-        "zfs (RAID0)" => Ok(Zfs(ZfsRaidLevel::Raid0)),
-        "zfs (RAID1)" => Ok(Zfs(ZfsRaidLevel::Raid1)),
-        "zfs (RAID10)" => Ok(Zfs(ZfsRaidLevel::Raid10)),
-        "zfs (RAIDZ-1)" => Ok(Zfs(ZfsRaidLevel::RaidZ)),
-        "zfs (RAIDZ-2)" => Ok(Zfs(ZfsRaidLevel::RaidZ2)),
-        "zfs (RAIDZ-3)" => Ok(Zfs(ZfsRaidLevel::RaidZ3)),
-        "btrfs (RAID0)" => Ok(Btrfs(BtrfsRaidLevel::Raid0)),
-        "btrfs (RAID1)" => Ok(Btrfs(BtrfsRaidLevel::Raid1)),
-        "btrfs (RAID10)" => Ok(Btrfs(BtrfsRaidLevel::Raid10)),
-        _ => Err(de::Error::custom("could not find file system: {de_fs}")),
-    }
+    pub first_boot: InstallFirstBootSetup,
 }

@@ -236,6 +236,7 @@ my sub detect_country_tracing_to : prototype($$) {
 #     kernel_cmdline = <contents of /proc/cmdline>,
 #     total_memory = <memory size in MiB>,
 #     hvm_supported = <1 if the CPU supports hardware-accelerated virtualization>,
+#     secure_boot = <1 if SecureBoot is enabled>,
 #     boot_type = <either 'efi' or 'bios'>,
 #     disks => <see Proxmox::Sys::Block::hd_list()>,
 #     network => {
@@ -247,7 +248,7 @@ my sub detect_country_tracing_to : prototype($$) {
 sub query_installation_environment : prototype() {
     # check first if somebody already cached this for us and re-use that
     my $run_env_file = Proxmox::Install::ISOEnv::get('run-env-cache-file');
-    if (-f "$run_env_file") {
+    if (-f "$run_env_file" && !Proxmox::Install::ISOEnv::is_test_mode()) {
 	log_info("re-using cached runtime env from $run_env_file");
 	my $cached_env = eval {
 	    my $run_env_raw = Proxmox::Sys::File::file_read_all($run_env_file);
@@ -291,7 +292,7 @@ sub query_installation_environment : prototype() {
 	    log_warn("Failed to read secure boot state: $@\n");
 	} else {
 	    my @secureboot = unpack("CCCCC", $content);
-	    $output->{secure_boot} = $secureboot[4] == 1;
+	    $output->{secure_boot} = $secureboot[4] == 1 ? 1 : 0;
 	}
     }
 
@@ -329,7 +330,8 @@ our $ZFS_ARC_SYSMEM_PERCENTAGE = 0.1; # use 10% of available system memory by de
 # Calculates the default upper limit for the ZFS ARC size.
 # Returns the default ZFS maximum ARC size in MiB.
 sub default_zfs_arc_max {
-    # Use ZFS default on non-PVE
+    # For products other the PVE, just let ZFS decide on its own. Setting `0`
+    # causes the installer to skip writing the `zfs_arc_max` module parameter.
     return 0 if Proxmox::Install::ISOEnv::get('product') ne 'pve';
 
     my $default_mib = get('total_memory') * $ZFS_ARC_SYSMEM_PERCENTAGE;

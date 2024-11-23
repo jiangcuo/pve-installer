@@ -16,7 +16,7 @@ use Proxmox::Install::StorageConfig;
 
 use Proxmox::Sys::Block qw(get_cached_disks wipe_disk partition_bootable_disk);
 use Proxmox::Sys::Command qw(run_command syscmd);
-use Proxmox::Sys::File qw(file_read_firstline file_write_all);
+use Proxmox::Sys::File qw(file_read_firstline file_read_all file_write_all);
 use Proxmox::Sys::ZFS;
 use Proxmox::UI;
 
@@ -186,7 +186,10 @@ sub zfs_ask_existing_zpool_rename {
     my $exported_pools = Proxmox::Sys::ZFS::get_exported_pools();
 
     foreach (@$exported_pools) {
-	next if $_->{name} ne $pool_name || $_->{state} ne 'ONLINE';
+	# Pool will be in degraded state if a subset of the associated disks have been wiped by the
+	# installer, but the pool can still be imported (required for the rename).
+	next if $_->{name} ne $pool_name ||
+	    not ($_->{state} eq 'ONLINE' || $_->{state} eq 'DEGRADED');
 	my $renamed_pool = "$_->{name}-OLD-$_->{id}";
 
 	my $do_rename = Proxmox::Install::Config::get_existing_storage_auto_rename();
@@ -560,7 +563,13 @@ sub create_lvm_volumes {
     } else {
 	my $maxvz = Proxmox::Install::Config::get_maxvz();
 	if ($iso_env->{product} eq 'pve' && !defined($maxvz)) {
-	    Proxmox::UI::message("Skipping auto-creation of LVM thinpool for guest data due to low space.");
+	    Proxmox::UI::message(
+	        "Skipping auto-creation of LVM thinpool for guest data due to low space.");
+	} elsif ($iso_env->{product} eq 'pve' && $maxvz != 0) {
+	    Proxmox::UI::message(
+	        "Skipping auto-creation of LVM thinpool for guest data. Maximum data volume size set"
+	        ." too low (<= 4 GiB)."
+	    );
 	}
 	$datadev = undef;
     }
@@ -723,6 +732,55 @@ my sub setup_root_password {
     }
 }
 
+my sub setup_proxmox_first_boot_service {
+    my ($targetdir) = @_;
+
+    return if !Proxmox::Install::Config::get_first_boot_opt('enabled');
+
+    my $iso_env = Proxmox::Install::ISOEnv::get();
+    my $proxmox_rundir = $iso_env->{locations}->{run};
+
+    my $exec_name = 'proxmox-first-boot';
+    my $pending_flagfile = "pending-first-boot-setup";
+    my $targetpath = "$targetdir/var/lib/proxmox-first-boot";
+
+    die "cannot find proxmox-first-boot hook executable?\n"
+	if ! -f "$proxmox_rundir/$exec_name";
+
+    # Create /var/lib/proxmox-first-boot state directory
+    syscmd("mkdir -p $targetpath/") == 0
+	|| die "failed to create $targetpath directory\n";
+
+    syscmd("cp $proxmox_rundir/$exec_name $targetpath/") == 0
+	|| die "unable to copy $exec_name executable\n";
+    syscmd("touch $targetpath/$pending_flagfile") == 0
+	|| die "unable to create $pending_flagfile flag file\n";
+
+    # Explicitly mark the entire directory only accessible, to prevent
+    # possible secret leaks from the bootstrap script.
+    syscmd("chmod -R 0700 $targetpath") == 0
+	|| warn "failed to set permissions for $targetpath\n";
+
+    # Enable the correct unit according the requested target ordering
+    my $ordering = Proxmox::Install::Config::get_first_boot_opt('ordering_target');
+
+    # .. so do it ourselves
+    my $linktarget = "/lib/systemd/system/proxmox-first-boot-$ordering.service";
+    syscmd("ln -sf $linktarget $targetdir/etc/systemd/system/proxmox-first-boot.service") == 0
+	|| die "failed to link proxmox-first-boot-$ordering.service\n";
+
+    my $servicefile = file_read_all("$targetdir/$linktarget");
+    if ($servicefile =~ m/^WantedBy=(.+)$/m) {
+	my $wantedby = $1;
+
+	syscmd("mkdir -p $targetdir/etc/systemd/system/$wantedby.wants") == 0
+	    || die "failed to create $wantedby.wants directory\n";
+
+	syscmd("ln -sf $linktarget $targetdir/etc/systemd/system/$wantedby.wants/proxmox-first-boot-$ordering.service") == 0
+	    || die "failed to link $wantedby.wants/proxmox-first-boot-$ordering.service\n";
+    }
+}
+
 sub extract_data {
     my $iso_env = Proxmox::Install::ISOEnv::get();
     my $run_env = Proxmox::Install::RunEnv::get();
@@ -771,6 +829,7 @@ sub extract_data {
     }
 
     my $bootloader_err;
+    my $diskcount = 0;
 
     eval {
 	my $maxper = 0.25;
@@ -809,6 +868,7 @@ sub extract_data {
 	} elsif ($use_btrfs) {
 
 	    my ($devlist, $btrfs_mode) = get_btrfs_raid_setup();
+	    $diskcount = scalar(@$devlist);
 
 	    foreach my $hd (@$devlist) {
 		wipe_disk(@$hd[1]);
@@ -843,6 +903,7 @@ sub extract_data {
 	} elsif ($use_zfs) {
 
 	    my ($devlist, $vdev) = get_zfs_raid_setup();
+	    $diskcount = scalar(@$devlist);
 
 	    foreach my $hd (@$devlist) {
 		wipe_disk(@$hd[1]);
@@ -890,6 +951,7 @@ sub extract_data {
 	} else {
 	    my $target_hd = Proxmox::Install::Config::get_target_hd();
 	    die "target '$target_hd' is not a valid block device\n" if ! -b $target_hd;
+	    $diskcount = 1;
 
 	    wipe_disk($target_hd);
 
@@ -1113,7 +1175,16 @@ sub extract_data {
 
 	    die "unable to detect FS UUID" if !defined($fsuuid);
 
-	    $fstab .= "UUID=$fsuuid / btrfs defaults 0 1\n";
+	    my $btrfs_opts = Proxmox::Install::Config::get_btrfs_opt();
+
+	    my $mountopts = 'defaults';
+	    if ($btrfs_opts->{compress} eq 'on') {
+		$mountopts .= ',compress';
+	    } elsif ($btrfs_opts->{compress} ne 'off') {
+		$mountopts .= ",compress=$btrfs_opts->{compress}";
+	    }
+
+	    $fstab .= "UUID=$fsuuid / btrfs $mountopts 0 1\n";
 	} else {
 	    my $root_mountopt = $fssetup->{$filesys}->{root_mountopt} || 'defaults';
 	    $fstab .= "$rootdev / $filesys ${root_mountopt} 0 1\n";
@@ -1203,6 +1274,7 @@ _EOD
 	    next if ($deb =~ /grub-efi-amd64_/ && $run_env->{boot_type} ne 'efi');
 	    next if ($deb =~ /^proxmox-grub/ && $run_env->{boot_type} ne 'efi');
 	    next if ($deb =~ /^proxmox-secure-boot-support_/ && !$run_env->{secure_boot});
+	    next if ($deb =~ /^proxmox-first-boot/ && !Proxmox::Install::Config::get_first_boot_opt('enabled'));
 
 	    update_progress($count/$pkg_count, 0.5, 0.75, "extracting $deb");
 
@@ -1280,7 +1352,12 @@ _EOD
 	    debconfig_set($targetdir, "pve-manager pve-manager/country string $ucc\n");
 	}
 
-	update_progress(0.8, 0.95, 1, "make system bootable");
+	my $ask_for_patience = "";
+	$ask_for_patience = " (multiple disks detected, please be patient)" if $diskcount > 3;
+	update_progress(0.8, 0.95, 1, "make system bootable$ask_for_patience");
+
+	setup_proxmox_first_boot_service($targetdir);
+
 	my $target_cmdline='';
 	if ($target_cmdline = Proxmox::Install::Config::get_target_cmdline()) {
 	    my $target_cmdline_snippet = '';

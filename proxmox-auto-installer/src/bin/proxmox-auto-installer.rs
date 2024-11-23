@@ -1,18 +1,22 @@
 use anyhow::{bail, format_err, Result};
 use log::{error, info, LevelFilter};
 use std::{
-    env,
+    env, fs,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::ExitCode,
 };
 
-use proxmox_installer_common::setup::{
-    installer_setup, read_json, spawn_low_level_installer, LocaleInfo, RuntimeInfo, SetupInfo,
+use proxmox_installer_common::{
+    http,
+    setup::{
+        installer_setup, read_json, spawn_low_level_installer, LocaleInfo, RuntimeInfo, SetupInfo,
+    },
+    FIRST_BOOT_EXEC_MAX_SIZE, FIRST_BOOT_EXEC_NAME, RUNTIME_DIR,
 };
 
 use proxmox_auto_installer::{
-    answer::Answer,
+    answer::{Answer, FirstBootHookInfo, FirstBootHookSourceMode},
     log::AutoInstLogger,
     udevinfo::UdevInfo,
     utils::{parse_answer, LowLevelMessage},
@@ -25,6 +29,38 @@ pub fn init_log() -> Result<()> {
     log::set_logger(&LOGGER)
         .map(|()| log::set_max_level(LevelFilter::Info))
         .map_err(|err| format_err!(err))
+}
+
+fn setup_first_boot_executable(first_boot: &FirstBootHookInfo) -> Result<()> {
+    let content = match first_boot.source {
+        FirstBootHookSourceMode::FromUrl => {
+            if let Some(url) = &first_boot.url {
+                info!("Fetching first-boot hook from {url} ..");
+                Some(http::get(url, first_boot.cert_fingerprint.as_deref())?)
+            } else {
+                bail!("first-boot hook source set to URL, but none specified!");
+            }
+        }
+        FirstBootHookSourceMode::FromIso => Some(fs::read_to_string(format!(
+            "/cdrom/{FIRST_BOOT_EXEC_NAME}"
+        ))?),
+    };
+
+    if let Some(content) = content {
+        if content.len() > FIRST_BOOT_EXEC_MAX_SIZE {
+            bail!(
+                "Maximum file size for first-boot executable file is {} MiB",
+                FIRST_BOOT_EXEC_MAX_SIZE / 1024 / 1024
+            )
+        }
+
+        Ok(fs::write(
+            format!("/{RUNTIME_DIR}/{FIRST_BOOT_EXEC_NAME}"),
+            content,
+        )?)
+    } else {
+        Ok(())
+    }
 }
 
 fn auto_installer_setup(in_test_mode: bool) -> Result<(Answer, UdevInfo)> {
@@ -42,15 +78,11 @@ fn auto_installer_setup(in_test_mode: bool) -> Result<(Answer, UdevInfo)> {
             .map_err(|err| format_err!("Failed to retrieve udev info details: {err}"))?
     };
 
-    let mut buffer = String::new();
-    let lines = std::io::stdin().lock().lines();
-    for line in lines {
-        buffer.push_str(&line.unwrap());
-        buffer.push('\n');
-    }
+    let answer = Answer::try_from_reader(std::io::stdin().lock())?;
 
-    let answer: Answer =
-        toml::from_str(&buffer).map_err(|err| format_err!("Failed parsing answer file: {err}"))?;
+    if let Some(first_boot) = &answer.first_boot {
+        setup_first_boot_executable(first_boot)?;
+    }
 
     Ok((answer, udev_info))
 }
@@ -86,12 +118,10 @@ fn main() -> ExitCode {
     match run_installation(&answer, &locales, &runtime_info, &udevadm_info, &setup_info) {
         Ok(_) => info!("Installation done."),
         Err(err) => {
-            error!("Installation failed: {err}");
+            error!("Installation failed: {err:#}");
             return exit_failure(answer.global.reboot_on_error);
         }
     }
-
-    // TODO: (optionally) do a HTTP post with basic system info, like host SSH public key(s) here
 
     ExitCode::SUCCESS
 }
