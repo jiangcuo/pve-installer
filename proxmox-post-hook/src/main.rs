@@ -99,7 +99,7 @@ struct ProductInfo {
 }
 
 /// The current kernel version.
-/// Aligns with the format as used by the /nodes/<node>/status API of each product.
+/// Aligns with the format as used by the `/nodes/<node>/status` API of each product.
 #[derive(Serialize)]
 struct KernelVersionInformation {
     /// The systemname/nodename
@@ -422,9 +422,7 @@ impl PostHookInfo {
     ///
     /// First, it determines the exact path to the kernel image (aka. `/boot/vmlinuz-<version>`)
     /// by looking at the installed kernel package, then reads the string directly from the image
-    /// from the well-defined kernel header. See also [0] for details.
-    ///
-    /// [0] https://www.kernel.org/doc/html/latest/arch/x86/boot.html
+    /// from the [well-defined kernel header].
     ///
     /// # Arguments
     ///
