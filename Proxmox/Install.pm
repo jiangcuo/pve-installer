@@ -689,7 +689,9 @@ sub prepare_grub_efi_boot_esp {
 		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target loongarch64-efi --no-floppy --bootloader-id='proxmox' $dev");
 	} elsif ($arch eq "riscv64"){
 		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='proxmox' $dev");
-	} else {
+	} elsif ($arch eq "x86_64"){
+                my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='proxmox' $dev");
+        } else {
 		die "unable to install grub on arch $arch\n";
 	}
 	if ($rc != 0) {
@@ -1475,6 +1477,7 @@ _EOD
             }
         }
         die "unable to detect kernel version\n" if !defined($kapi);
+        my $arch = get_host_arch();
 
         if (!is_test_mode()) {
 
