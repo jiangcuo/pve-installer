@@ -676,7 +676,7 @@ sub prepare_grub_efi_boot_esp {
 	} elsif ($arch eq "riscv64"){
 		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='proxmox' $dev");
 	} elsif ($arch eq "x86_64"){
-                my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='proxmox' $dev");
+                my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target x86_64-efi --no-floppy --bootloader-id='proxmox' $dev");
         } else {
 		die "unable to install grub on arch $arch\n";
 	}
@@ -701,6 +701,9 @@ sub prepare_grub_efi_boot_esp {
             die "unable to copy efi boot loader\n";
 	} elsif ($arch eq "riscv64") {
 		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubriscv64.efi $targetdir/boot/efi/EFI/BOOT/BOOTRISCV64.efi") == 0  ||
+            die "unable to copy efi boot loader\n";
+	} elsif ($arch eq "x86_64") {
+                syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubx64.efi $targetdir/boot/efi/EFI/BOOT/BOOTX64.efi") == 0  ||
             die "unable to copy efi boot loader\n";
 	} else {
                 die "unable to opy efi boot loader on arch $arch\n";
