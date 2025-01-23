@@ -675,7 +675,9 @@ sub prepare_grub_efi_boot_esp {
 		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target loongarch64-efi --no-floppy --bootloader-id='proxmox' $dev");
 	} elsif ($arch eq "riscv64"){
 		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='proxmox' $dev");
-	} else {
+	} elsif ($arch eq "x86_64"){
+                my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='proxmox' $dev");
+        } else {
 		die "unable to install grub on arch $arch\n";
 	}
 	if ($rc != 0) {
@@ -1387,7 +1389,7 @@ _EOD
 	diversion_remove($targetdir, "/usr/sbin/update-grub");
 	diversion_remove($targetdir, "/usr/sbin/update-initramfs");
 
-
+	my $arch = get_host_arch();
 	if (!is_test_mode()) {
 
 	    unlink ("$targetdir/etc/mtab");
@@ -1411,8 +1413,9 @@ _EOD
 		    } else {
 			if (!$native_4k_disk_bootable) {
 			    eval {
-#				syscmd("chroot $targetdir /usr/sbin/grub-install --target i386-pc --no-floppy --bootloader-id='proxmox' $dev") == 0 ||
-					print ("not need  install the i386-pc boot loader on '$dev'\n");
+				if ($arch eq 'x86_64'){
+					syscmd("chroot $targetdir /usr/sbin/grub-install --target i386-pc --no-floppy --bootloader-id='proxmox' $dev") 
+				}
 			    };
 			    push @$bootloader_err_list, $@ if $@;
 			}
