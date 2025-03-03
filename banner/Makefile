@@ -4,6 +4,7 @@ INSTALLER_SOURCES=		\
 	pve-banner.png		\
 	pbs-banner.png		\
 	pdm-banner.png		\
+	pxvirt-banner.png		\
 
 %-banner.png: %-banner.svg
 	rsvg-convert -o $@ $<

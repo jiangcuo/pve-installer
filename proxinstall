@@ -1266,7 +1266,7 @@ sub create_hdoption_view {
     push @$hdsize_labeled_widgets, ['swapsize', $entry_swapsize, 'GB'];
 
     my $entry_maxroot = Gtk3::Entry->new();
-    if ($iso_env->{product} eq 'pve') {
+    if ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
 	$entry_maxroot->set_tooltip_text("maximum size for LVM root volume");
 	$entry_maxroot->signal_connect (key_press_event => \&check_float);
 	if (my $maxroot = Proxmox::Install::Config::get_maxroot()) {
@@ -1284,7 +1284,7 @@ sub create_hdoption_view {
     push @$hdsize_labeled_widgets, ['minfree', $entry_minfree, 'GB'];
 
     my $entry_maxvz;
-    if ($iso_env->{product} eq 'pve') {
+    if ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
 	$entry_maxvz = Gtk3::Entry->new();
 	$entry_maxvz->set_tooltip_text("maximum size for LVM data volume");
 	$entry_maxvz->signal_connect (key_press_event => \&check_float);
