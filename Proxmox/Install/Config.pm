@@ -37,7 +37,7 @@ sub parse_kernel_cmdline {
     }
 
     my $iso_env = Proxmox::Install::ISOEnv::get();
-    if ($iso_env->{product} eq 'pve') {
+    if ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
 	if ($cmdline =~ s/\bmaxvz=(\d+(\.\d+)?)\s?//i) {
 	    $cfg->{maxvz} = $1;
 	}

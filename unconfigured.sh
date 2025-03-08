@@ -183,7 +183,7 @@ if (("${console_dim[0]}" > 100)) && (("${console_dim[1]}" > 400)); then
 fi
 
 # set the hostname
-hostname proxmox
+hostname pxvirt
 
 if command -v dbus-daemon; then
     echo "starting D-Bus daemon"

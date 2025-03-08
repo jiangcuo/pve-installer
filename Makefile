@@ -165,11 +165,11 @@ prepare-check-env: test-$(DEB)
 
 cd-info.test: PRODUCT ?= pve
 cd-info.test:
-	printf '%s\n' "PRODUCT='$(or $(PRODUCT), pve)'" >$@.tmp
-	printf '%s\n' "PRODUCTLONG='$(or $(PRODUCTLONG), Proxmox VE)'" >>$@.tmp
+	printf '%s\n' "PRODUCT='$(or $(PRODUCT), pxvirt)'" >$@.tmp
+	printf '%s\n' "PRODUCTLONG='$(or $(PRODUCTLONG), PXVIRT)'" >>$@.tmp
 	printf '%s\n' "RELEASE='$(or $(RELEASE), 42.1)'" >>$@.tmp
 	printf '%s\n' "ISORELEASE='$(or $(ISORELEASE), 1)'" >>$@.tmp
-	printf '%s\n' "ISONAME='$(or $(ISONAME), proxmox-ve)'" >>$@.tmp
+	printf '%s\n' "ISONAME='$(or $(ISONAME), pxvirt)'" >>$@.tmp
 	mv $@.tmp $@
 
 check-pve: prepare-check-env test.img

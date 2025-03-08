@@ -144,6 +144,7 @@ sub create_main_window {
 
     my $provider = Gtk3::CssProvider->new();
     my $theming = "* {\nbackground: #171717;\n}";
+    $theming = "* {\nbackground: #264287;\n}" if $iso_env->{product} eq 'pxvirt';
     $provider->load_from_data ([map ord, split //, $theming]);
     my $context = $image->get_style_context();
     $context->add_provider($provider, 600);
@@ -1266,7 +1267,7 @@ sub create_hdoption_view {
     push @$hdsize_labeled_widgets, ['swapsize', $entry_swapsize, 'GB'];
 
     my $entry_maxroot = Gtk3::Entry->new();
-    if ($iso_env->{product} eq 'pve') {
+    if ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
 	$entry_maxroot->set_tooltip_text("maximum size for LVM root volume");
 	$entry_maxroot->signal_connect (key_press_event => \&check_float);
 	if (my $maxroot = Proxmox::Install::Config::get_maxroot()) {
@@ -1284,7 +1285,7 @@ sub create_hdoption_view {
     push @$hdsize_labeled_widgets, ['minfree', $entry_minfree, 'GB'];
 
     my $entry_maxvz;
-    if ($iso_env->{product} eq 'pve') {
+    if ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
 	$entry_maxvz = Gtk3::Entry->new();
 	$entry_maxvz->set_tooltip_text("maximum size for LVM data volume");
 	$entry_maxvz->signal_connect (key_press_event => \&check_float);
@@ -1617,9 +1618,9 @@ sub create_intro_view {
 
     Proxmox::UI::display_html('license.htm', sub {
 	my ($raw_html, $iso_env) = @_;
-
 	my $proxmox_cddir = $iso_env->{locations}->{iso};
-	my $license = eval { decode('utf8', file_read_all("${proxmox_cddir}/EULA")) };
+    my $path = "$proxmox_cddir/EULA";
+	my $license = eval { decode('utf8', file_read_all($path)) };
 	if (my $err = $@) {
 	    die $err if !is_test_mode();
 	    $license = "TESTMODE: Ignore non existent EULA...\n";

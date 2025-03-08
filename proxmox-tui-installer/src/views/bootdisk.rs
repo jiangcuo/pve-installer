@@ -642,7 +642,7 @@ impl ZfsBootdiskOptionsView {
             // For PVE "force" the default value, for other products place the recommended value
             // only in the placeholder. This causes for the latter to not write the module option
             // if the value is never modified by the user.
-            if product_conf.product == ProxmoxProduct::PVE {
+            if (product_conf.product == ProxmoxProduct::PVE || product_conf.product == ProxmoxProduct::PXVIRT) {
                 view.content(options.arc_max)
             } else {
                 let view = view.placeholder(runinfo.total_memory / 2);

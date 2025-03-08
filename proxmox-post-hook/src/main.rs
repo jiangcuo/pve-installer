@@ -398,6 +398,7 @@ impl PostHookInfo {
     ) -> Result<ProductInfo> {
         let package = match setup_info.config.product {
             ProxmoxProduct::PVE => "pve-manager",
+            ProxmoxProduct::PXVIRT => "pve-manager",
             ProxmoxProduct::PMG => "pmg-api",
             ProxmoxProduct::PBS => "proxmox-backup-server",
             ProxmoxProduct::PDM => "proxmox-datacenter-manager",

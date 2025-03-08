@@ -44,6 +44,10 @@ while (my ($total_mem, $expected) = each %default_tests) {
     is(Proxmox::Install::RunEnv::default_zfs_arc_max(), $expected,
 	"$expected MiB should be zfs_arc_max for PVE with $total_mem MiB system memory");
 
+    mock_product('pxvirt');
+    is(Proxmox::Install::RunEnv::default_zfs_arc_max(), $expected,
+	"$expected MiB should be zfs_arc_max for PXVIRT with $total_mem MiB system memory");
+
     mock_product('pbs');
     is(Proxmox::Install::RunEnv::default_zfs_arc_max(), 0,
 	"zfs_arc_max should default to `0` for PBS with $total_mem MiB system memory");
