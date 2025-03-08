@@ -48,6 +48,8 @@ __EOD__
 }
 
 sub get_lvm_thin_config {
+	my $iso_env = Proxmox::Install::ISOEnv::get();
+	my $vgname = $iso_env->{product};
     my $storage_cfg_lvmthin = <<__EOD__;
 dir: local
 	path /var/lib/vz
@@ -55,7 +57,7 @@ dir: local
 
 lvmthin: local-lvm
 	thinpool data
-	vgname pve
+	vgname $vgname
 	content rootdir,images
 __EOD__
     return $storage_cfg_lvmthin;
