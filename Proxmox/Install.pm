@@ -670,13 +670,13 @@ sub prepare_grub_efi_boot_esp {
     my $rc;
     eval {
 	if ($arch eq "aarch64"){
-		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target arm64-efi --no-floppy --bootloader-id='proxmox' $dev");
+		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target arm64-efi --no-floppy --bootloader-id='lierfang' $dev");
 	} elsif ($arch eq "loongarch64"){
-		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target loongarch64-efi --no-floppy --bootloader-id='proxmox' $dev");
+		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target loongarch64-efi --no-floppy --bootloader-id='lierfang' $dev");
 	} elsif ($arch eq "riscv64"){
-		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='proxmox' $dev");
+		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='lierfang' $dev");
 	} elsif ($arch eq "x86_64"){
-                my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target x86_64-efi --no-floppy --bootloader-id='proxmox' $dev");
+                my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target x86_64-efi --no-floppy --bootloader-id='lierfang' $dev");
         } else {
 		die "unable to install grub on arch $arch\n";
 	}
@@ -692,7 +692,7 @@ sub prepare_grub_efi_boot_esp {
 
 	# also install fallback boot file (OVMF does not boot without)
 	mkdir("$targetdir/boot/efi/EFI/BOOT");
-	syscmd("cp -r $targetdir/boot/efi/EFI/proxmox/* $targetdir/boot/efi/EFI/BOOT/");
+	syscmd("cp -r $targetdir/boot/efi/EFI/lierfang/* $targetdir/boot/efi/EFI/BOOT/");
 	if ($arch eq "aarch64"){
 		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubaa64.efi $targetdir/boot/efi/EFI/BOOT/BOOAA64.EFI ") == 0  ||
 	    die "unable to copy efi boot loader\n";
