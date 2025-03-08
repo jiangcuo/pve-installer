@@ -233,7 +233,7 @@ sub zfs_create_rpool {
     syscmd("zfs create $pool_name/ROOT/$root_volume_name") == 0
         || die "unable to create zfs $pool_name/ROOT/$root_volume_name volume\n";
 
-    if ($iso_env->{product} eq 'pve') {
+    if ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
         syscmd("zfs create $pool_name/data") == 0
             || die "unable to create zfs $pool_name/data volume\n";
         syscmd(
@@ -488,7 +488,7 @@ sub create_lvm_volumes {
     my $rootsize;
     my $datasize = 0;
 
-    if ($iso_env->{product} eq 'pve') {
+    if ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
 
         my $maxroot_mb;
         if (my $maxroot = Proxmox::Install::Config::get_maxroot()) {
@@ -568,10 +568,10 @@ sub create_lvm_volumes {
             || die "unable to create data thin-pool\n";
     } else {
         my $maxvz = Proxmox::Install::Config::get_maxvz();
-        if ($iso_env->{product} eq 'pve' && !defined($maxvz)) {
+        if (($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') && !defined($maxvz)) {
             Proxmox::UI::message(
                 "Skipping auto-creation of LVM thinpool for guest data due to low space.");
-        } elsif ($iso_env->{product} eq 'pve' && $maxvz != 0) {
+        } elsif (($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') && $maxvz != 0) {
             Proxmox::UI::message(
                 "Skipping auto-creation of LVM thinpool for guest data. Maximum data volume size set"
                     . " too low (<= 4 GiB).");
@@ -1063,7 +1063,7 @@ sub extract_data {
         mkdir "$targetdir/var";
         mkdir "$targetdir/var/lib";
 
-        if ($iso_env->{product} eq 'pve') {
+        if ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
             mkdir "$targetdir/var/lib/vz";
             mkdir "$targetdir/var/lib/pve";
 
@@ -1410,7 +1410,7 @@ _EOD
                 or warn "failed to disable clamav-clamonacc.service - $!\n";
         }
 
-        if ($iso_env->{product} eq 'pve') {
+        if ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
             # save installer settings
             my $ucc = uc($country);
             debconfig_set($targetdir, "pve-manager pve-manager/country string $ucc\n");
@@ -1559,7 +1559,7 @@ _EOD
             file_write_all("$targetdir/etc/pmg/pmg.conf",
                 "section: admin\n\temail ${mailto}\n");
 
-        } elsif ($iso_env->{product} eq 'pve') {
+        } elsif ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
 
             # create pmxcfs DB
 
@@ -1661,7 +1661,7 @@ _EOD
         syscmd("zfs set mountpoint=/ $zfs_pool_name/ROOT/$zfs_root_volume_name") == 0
             || die "zfs set mountpoint failed\n";
 
-        if ($iso_env->{product} eq 'pve') {
+        if ($iso_env->{product} eq 'pve' || $iso_env->{product} eq 'pxvirt') {
             syscmd("zfs set mountpoint=/var/lib/vz $zfs_pool_name/var-lib-vz") == 0
                 || die "zfs set mountpoint for var-lib-vz failed\n";
         }

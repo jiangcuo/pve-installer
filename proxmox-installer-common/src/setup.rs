@@ -27,6 +27,7 @@ pub enum ProxmoxProduct {
     PBS,
     PMG,
     PDM,
+    PXVIRT,
 }
 
 impl ProxmoxProduct {
@@ -36,6 +37,7 @@ impl ProxmoxProduct {
             Self::PMG => "pmg",
             Self::PBS => "pbs",
             Self::PDM => "pdm",
+            Self::PXVIRT => "pxvirt"
         }
     }
 }
@@ -44,6 +46,7 @@ impl fmt::Display for ProxmoxProduct {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::PVE => "pve",
+            Self::PXVIRT => "pxvirt",
             Self::PMG => "pmg",
             Self::PBS => "pbs",
             Self::PDM => "pdm",

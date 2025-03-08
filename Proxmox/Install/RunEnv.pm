@@ -366,6 +366,12 @@ our $ZFS_ARC_SYSMEM_PERCENTAGE = 0.1; # use 10% of available system memory by de
 # See also <https://bugzilla.proxmox.com/show_bug.cgi?id=4829> and
 # https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Module%20Parameters.html#zfs-arc-max
 sub default_zfs_arc_max {
+    # For products other the PVE, just let ZFS decide on its own. Setting `0`
+    # causes the installer to skip writing the `zfs_arc_max` module parameter.
+    if (Proxmox::Install::ISOEnv::get('product') ne 'pve' && Proxmox::Install::ISOEnv::get('product') ne 'pxvirt'){
+        return 0 
+    };
+
     my $product = Proxmox::Install::ISOEnv::get('product');
     my $total_memory = query_total_memory();
 

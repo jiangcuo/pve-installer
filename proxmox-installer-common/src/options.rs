@@ -359,6 +359,29 @@ impl ZfsBootdiskOptions {
     }
 }
 
+/// Calculates the default upper limit for the ZFS ARC size.
+/// See also <https://bugzilla.proxmox.com/show_bug.cgi?id=4829> and
+/// https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Module%20Parameters.html#zfs-arc-max
+///
+/// # Arguments
+/// * `product` - The product to be installed
+/// * `total_memory` - Total memory installed in the system, in MiB
+///
+/// # Returns
+/// The default ZFS maximum ARC size in MiB for this system.
+fn default_zfs_arc_max(product: ProxmoxProduct, total_memory: usize) -> usize {
+    if product != ProxmoxProduct::PVE && product != ProxmoxProduct::PXVIRT {
+        // For products other the PVE, just let ZFS decide on its own. Setting `0`
+        // causes the installer to skip writing the `zfs_arc_max` module parameter.
+        0
+    } else {
+        ((total_memory as f64) / 10.)
+            .round()
+            .clamp(64., 16. * 1024.) as usize
+    }
+}
+
+
 #[derive(Clone, Debug)]
 pub enum AdvancedBootdiskOptions {
     Lvm(LvmBootdiskOptions),
@@ -707,6 +730,7 @@ mod tests {
     fn network_options_from_setup_network_info() {
         let (setup, mut info) = mock_setup_network();
 
+<<<<<<< HEAD
         pretty_assertions::assert_eq!(
             NetworkOptions::defaults_from(&setup, &info, None),
             NetworkOptions {
@@ -831,5 +855,16 @@ mod tests {
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
             }
         );
+    }
+
+    #[test]
+    fn zfs_arc_max_defaults() {
+        let total_memory = 16384; // 16 GiB
+        let expected = 1638; // ~10%
+        assert_eq!(default_zfs_arc_max(ProxmoxProduct::PVE, total_memory), expected);
+        assert_eq!(default_zfs_arc_max(ProxmoxProduct::PXVIRT, total_memory), expected);
+        assert_eq!(default_zfs_arc_max(ProxmoxProduct::PBS, total_memory), 0);
+        assert_eq!(default_zfs_arc_max(ProxmoxProduct::PMG, total_memory), 0);
+        assert_eq!(default_zfs_arc_max(ProxmoxProduct::PDM, total_memory), 0);
     }
 }
