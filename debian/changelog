@@ -1,3 +1,9 @@
+proxmox-installer (8.3.9-1) bookworm; urgency=medium
+
+  * add pxvirt.
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Sat, 08 Mar 2025 12:30:24 +0800
+
 proxmox-installer (8.3.9) bookworm; urgency=medium
 
   * add preliminary support for new, in-development, PDM for which we plan an
