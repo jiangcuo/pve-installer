@@ -1,3 +1,11 @@
+proxmox-installer (8.4.6-pxvirt2) bookworm; urgency=medium
+
+  * set grub install id to lierfang
+
+  * use product vgname
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Sun, 09 Mar 2025 14:54:17 +0800
+
 proxmox-installer (8.4.6-pxvirt1) bookworm; urgency=medium
 
   * add pxvirt.
