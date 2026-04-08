@@ -626,6 +626,11 @@ my sub chroot_chmod {
 	die "chroot: unable to change permission mode for '$path'\n";
 }
 
+sub is_w510 {
+	# Huawei w510 uses spical bootloader ID
+	return syscmd("lscpu | grep -qE '2426SK|3211K'") == 0;
+}
+
 sub rockchip_dtb_setup {
 	my ($espdev, $targetdir, $zfs) = @_;
 	# For rockchpi efi env need Device Tree mode,   https://github.com/edk2-porting/edk2-rk3588
@@ -669,14 +674,15 @@ sub prepare_grub_efi_boot_esp {
     my $arch = get_host_arch();
     my $rc;
     eval {
+	my $bootloader_id = ($arch eq "aarch64" && is_w510()) ? 'ubuntu' : 'lierfang';
 	if ($arch eq "aarch64"){
-		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target arm64-efi --no-floppy --bootloader-id='lierfang' $dev");
+		$rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target arm64-efi --no-floppy --bootloader-id='$bootloader_id' $dev");
 	} elsif ($arch eq "loongarch64"){
-		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target loongarch64-efi --no-floppy --bootloader-id='lierfang' $dev");
+		$rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target loongarch64-efi --no-floppy --bootloader-id='$bootloader_id' $dev");
 	} elsif ($arch eq "riscv64"){
-		my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='lierfang' $dev");
+		$rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='$bootloader_id' $dev");
 	} elsif ($arch eq "x86_64"){
-                my $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target x86_64-efi --no-floppy --bootloader-id='lierfang' $dev");
+                $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target x86_64-efi --no-floppy --bootloader-id='$bootloader_id' $dev");
         } else {
 		die "unable to install grub on arch $arch\n";
 	}
@@ -692,7 +698,7 @@ sub prepare_grub_efi_boot_esp {
 
 	# also install fallback boot file (OVMF does not boot without)
 	mkdir("$targetdir/boot/efi/EFI/BOOT");
-	syscmd("cp -r $targetdir/boot/efi/EFI/lierfang/* $targetdir/boot/efi/EFI/BOOT/");
+	syscmd("cp -r $targetdir/boot/efi/EFI/$bootloader_id/* $targetdir/boot/efi/EFI/BOOT/");
 	if ($arch eq "aarch64"){
 		syscmd("cp $targetdir/boot/efi/EFI/BOOT/grubaa64.efi $targetdir/boot/efi/EFI/BOOT/BOOTAA64.EFI ") == 0  ||
 	    die "unable to copy efi boot loader\n";
