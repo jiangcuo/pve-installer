@@ -43,12 +43,12 @@ my %default_tests_others = (
     1024 * 1024 => 524288,
 );
 
-mock_product('pve');
 while (my ($total_mem, $expected) = each %default_tests_pve) {
     $proxmox_install_runenv->redefine(
 	query_total_memory => sub { return $total_mem; },
     );
 
+    mock_product('pve');
     is(Proxmox::Install::RunEnv::default_zfs_arc_max(), $expected,
 	"zfs_arc_max should default to $expected for pve with $total_mem MiB system memory");
 

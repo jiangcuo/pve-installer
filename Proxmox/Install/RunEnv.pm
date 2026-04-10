@@ -334,17 +334,11 @@ our $ZFS_ARC_SYSMEM_PERCENTAGE = 0.1; # use 10% of available system memory by de
 # See also <https://bugzilla.proxmox.com/show_bug.cgi?id=4829> and
 # https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Module%20Parameters.html#zfs-arc-max
 sub default_zfs_arc_max {
-    # For products other the PVE, just let ZFS decide on its own. Setting `0`
-    # causes the installer to skip writing the `zfs_arc_max` module parameter.
-    if (Proxmox::Install::ISOEnv::get('product') ne 'pve' && Proxmox::Install::ISOEnv::get('product') ne 'pxvirt'){
-        return 0 
-    };
-
     my $product = Proxmox::Install::ISOEnv::get('product');
     my $total_memory = query_total_memory();
 
-    # By default limit PVE and low-memory systems, for all just use the 50% of system memory
-    if ($product ne 'pve') {
+    # By default limit PVE/PXVIRT and low-memory systems, for all others just use 50% of system memory
+    if ($product ne 'pve' && $product ne 'pxvirt') {
 	my $zfs_default_mib = int(sprintf('%.0f', $total_memory / 2));
 	return $zfs_default_mib if $total_memory >= 2048 && $product ne 'pmg';
 	return $zfs_default_mib if $total_memory >= 4096; # PMG's base memory requirement is much higher
