@@ -1,3 +1,9 @@
+proxmox-installer (8.4.6-pxvirt3) bookworm; urgency=medium
+
+  * fix rebase error
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Fri, 10 Apr 2026 02:23:02 +0000
+
 proxmox-installer (8.4.6-pxvirt2) bookworm; urgency=medium
 
   * set grub install id to lierfang
