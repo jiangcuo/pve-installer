@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::{cmp, fmt};
 
-use crate::setup::{LocaleInfo, NetworkInfo, RuntimeInfo, SetupInfo};
+use crate::setup::{LocaleInfo, NetworkInfo, RuntimeInfo, SetupInfo,ProxmoxProduct};
 use crate::utils::{CidrAddress, Fqdn};
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -571,7 +571,6 @@ mod tests {
     fn network_options_from_setup_network_info() {
         let (setup, mut info) = mock_setup_network();
 
-<<<<<<< HEAD
         pretty_assertions::assert_eq!(
             NetworkOptions::defaults_from(&setup, &info, None),
             NetworkOptions {
