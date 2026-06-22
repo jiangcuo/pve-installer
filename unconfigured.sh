@@ -31,7 +31,19 @@ parse_cmdline() {
 }
 
 debugsh() {
-    /bin/bash
+    if [ "${IS_DEBIAN:-0}" -ne 0 ]; then
+        # Debian: standard login chain (~/.bash_profile -> ~/.bashrc) works.
+        /bin/bash -l
+    else
+        # openEuler initrd has no ~/.bash_profile or ~/.bashrc, so the normal
+        # login -> bashrc chain doesn't reach /etc/bashrc. Source it explicitly.
+        bash -c '
+            [ -r /etc/profile ] && . /etc/profile
+            [ -r /etc/bashrc ] && . /etc/bashrc
+            export PS1
+            exec bash -i
+        '
+    fi
 }
 
 eject_and_reboot() {
@@ -80,7 +92,12 @@ real_reboot() {
     fi
 
     # stop udev (release file handles)
-    /etc/init.d/udev stop
+    if [ "${IS_DEBIAN:-0}" -ne 0 ]; then
+        /etc/init.d/udev stop
+    else
+        # openEuler: tell the udev daemon to exit cleanly, releasing block-device handles
+        udevadm control --exit
+    fi
 
     swap=$(awk '/^\/dev\// { print $1 }' /proc/swaps);
     if [ -n "$swap" ]; then
@@ -144,7 +161,18 @@ handle_wireless() {
     fi
 }
 
-PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/X11R6/bin
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/X11R6/bin
+export HOME=/root
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+
+# detect distro family: Proxmox upstream is Debian-based, our port targets openEuler/RHEL.
+# `apt` only exists on Debian/Ubuntu, so use it to pick the right service-management commands.
+if command -v apt >/dev/null 2>&1; then
+    IS_DEBIAN=1
+else
+    IS_DEBIAN=0
+fi
 
 echo "Starting Proxmox installation"
 
@@ -171,9 +199,17 @@ modprobe -q usbhid ||  true
 modprobe -q dm_mod || true
 
 echo "Installing additional hardware drivers"
-export RUNLEVEL=S
-export PREVLEVEL=N
-/etc/init.d/udev start
+if [ "$IS_DEBIAN" -ne 0 ]; then
+    export RUNLEVEL=S
+    export PREVLEVEL=N
+    /etc/init.d/udev start
+else
+    # openEuler has no /etc/init.d/udev; start the daemon directly and trigger coldplug events
+    /usr/lib/systemd/systemd-udevd --daemon
+    udevadm trigger --type=subsystems --action=add
+    udevadm trigger --type=devices --action=add
+    udevadm settle
+fi
 
 mkdir -p /dev/shm
 mount -t tmpfs tmpfs /dev/shm
@@ -239,6 +275,51 @@ echo -n "Attempting to get DHCP leases... "
 dhclient -v
 echo "done"
 
+# --- start remote-access daemons (sshd + vncserver) ---
+# fail-soft: a broken setup must not abort the install, operator can still
+# use the local console
+
+# regenerate SSH host keys (squashfs ships without them; -A is idempotent)
+ssh-keygen -A 2>/dev/null || true
+
+# set root password (SHA512 hash written directly to /etc/shadow; works on
+# both Debian and openEuler; avoids the openEuler PAM `nullok` rabbit hole
+# that an empty-password approach would have run into)
+echo 'root:Pxvirt@Lierfang' | chpasswd -c SHA512 || echo "chpasswd failed ($?)"
+
+# LIVE image's sshd_config: allow root login (target system's sshd_config is
+# set separately by Proxmox::Install.pm)
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config || true
+
+# sshd needs /run/sshd (priv-sep runtime dir) — a fresh live boot has no
+# systemd-tmpfiles to create it
+mkdir -p /run/sshd
+
+# start sshd foreground (-D) + shell-backgrounded: bash keeps the real PID,
+# avoids sshd's fragile double-fork detach under a script-PID-1
+/usr/sbin/sshd -D >/var/log/sshd.live.log 2>&1 &
+
+# seed VNC password (same as root password)
+export USER=root
+mkdir -p /root/.vnc
+echo 'Pxvirt@Lierfang' | vncpasswd -f > /root/.vnc/passwd || echo "vncpasswd failed ($?)"
+chmod 600 /root/.vnc/passwd 2>/dev/null || true
+
+# xstartup: openbox only — NOT proxinstall, so it does not race with the
+# local-console GUI mode on /target. Operator launches proxinstall by hand
+# in the VNC desktop or via SSH.
+cat > /root/.vnc/xstartup <<EOF
+#!/bin/sh
+xsetroot -solid grey 2>/dev/null
+exec openbox-session
+EOF
+chmod +x /root/.vnc/xstartup
+
+# vncserver perl wrapper forks Xvnc and returns; no `&` needed
+vncserver :1 -geometry 1280x800 -depth 24 -localhost no \
+    >/var/log/vncserver.live.log 2>&1 || echo "vncserver failed to start ($?) - see /var/log/vncserver.live.log"
+# --- end remote-access daemons ---
+
 echo "Starting chrony for opportunistic time-sync... "
 chronyd || echo "starting chrony failed ($?)"
 
@@ -252,6 +333,15 @@ sysctl -w kernel.printk='4 4 1 7'
 
 if [ $proxtui -ne 0 ]; then
     echo "Starting the TUI installer"
+    # setupcon (or other console init) can leave the VT in 8-bit mode, which
+    # renders cursive's UTF-8 box-drawing chars as Latin-1 mojibake (âöÇâöÇ...).
+    # Force the console back into UTF-8 output mode before launching the TUI.
+    if command -v unicode_start >/dev/null 2>&1; then
+        unicode_start
+    else
+        kbd_mode -u 2>/dev/null || true
+        printf '\033%%G'
+    fi
     /usr/bin/proxmox-tui-installer 2>/dev/tty2
 elif [ $start_auto_installer -ne 0 ]; then
     echo "Caching device info from udev"
@@ -293,7 +383,7 @@ elif [ $start_auto_installer -ne 0 ]; then
     fi
 else
     echo "Starting the installer GUI - see tty2 (CTRL+ALT+F2) for any errors..."
-    xinit -- -dpi "$DPI" -s 0 >/dev/tty2 2>&1
+    xinit /.xinitrc -- -dpi "$DPI" -s 0 >/dev/tty2 2>&1
 fi
 
 # just to be sure everything is on disk

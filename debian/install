@@ -10,6 +10,7 @@ etc
 html /var/lib/proxmox-installer/
 sbin
 usr/bin/checktime
+usr/bin/pve-rpm-transaction
 usr/bin/proxinstall
 usr/bin/proxmox-auto-installer
 usr/bin/proxmox-chroot

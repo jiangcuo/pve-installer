@@ -11,6 +11,7 @@ PERL_MODULES=\
     Install/ISOEnv.pm \
     Install/RunEnv.pm \
     Install/StorageConfig.pm \
+    Install/Distro.pm \
     Log.pm \
     Sys.pm \
     Sys/Block.pm \

@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+
+import argparse
+import glob
+import os
+import sys
+
+
+PREFIX = "PVE-RPM"
+
+
+def emit(*fields):
+    print("\t".join([PREFIX, *map(str, fields)]), flush=True)
+
+
+def emit_progress(phase, done, total, name):
+    emit("progress", phase, done, total, name)
+
+
+def emit_error(*fields):
+    emit("error", *fields)
+
+
+def package_label(header):
+    name = header["name"] or "unknown"
+    arch = header["arch"] or "noarch"
+    return f"{name}.{arch}"
+
+
+def expand_paths(paths):
+    expanded = []
+    for path in paths:
+        matches = sorted(glob.glob(path))
+        expanded.extend(matches or [path])
+
+    return expanded
+
+
+def run_self_test():
+    emit_progress("install", 1, 2, "pve-test-a.noarch")
+    emit_progress("configure", 1, 2, "pve-test-a.noarch")
+    emit_progress("install", 2, 2, "pve-test-b.noarch")
+    emit_progress("verify", 2, 2, "pve-test-b.noarch")
+    emit("done", "self-test")
+    return 0
+
+
+def load_rpm_headers(rpm, ts, paths):
+    packages = []
+
+    for path in paths:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            header = ts.hdrFromFdno(fd)
+        finally:
+            os.close(fd)
+
+        packages.append((path, header, package_label(header)))
+
+    return packages
+
+
+def disable_signature_checks(rpm, ts):
+    flags = 0
+
+    for name in (
+        "RPMVSF_NOSIGNATURES",
+        "RPMVSF_NODIGESTS",
+        "RPMVSF_NOHDRCHK",
+        "_RPMVSF_NOSIGNATURES",
+        "_RPMVSF_NODIGESTS",
+    ):
+        flags |= getattr(rpm, name, 0)
+
+    if flags:
+        ts.setVSFlags(flags)
+
+
+def set_optional_flags(rpm, ts, args):
+    trans_flags = 0
+    prob_filter = 0
+
+    if args.nodeps:
+        trans_flags |= getattr(rpm, "RPMTRANS_FLAG_NODEPS", 0)
+
+    if args.replacepkgs:
+        prob_filter |= getattr(rpm, "RPMPROB_FILTER_REPLACEPKG", 0)
+
+    if args.oldpackage:
+        prob_filter |= getattr(rpm, "RPMPROB_FILTER_OLDPACKAGE", 0)
+
+    if trans_flags:
+        ts.setFlags(trans_flags)
+
+    if prob_filter:
+        ts.setProbFilter(prob_filter)
+
+
+def close_open_fds(open_fds):
+    for fd in list(open_fds.values()):
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    open_fds.clear()
+
+
+def run_transaction(args):
+    try:
+        import rpm
+    except ImportError as err:
+        print(f"python rpm binding is not available: {err}", file=sys.stderr)
+        return 2
+
+    paths = expand_paths(args.rpms)
+    missing = [path for path in paths if not os.path.exists(path)]
+    if missing:
+        print("missing RPM package(s): " + ", ".join(missing), file=sys.stderr)
+        return 2
+
+    if not paths:
+        print("no RPM packages specified", file=sys.stderr)
+        return 2
+
+    ts = rpm.TransactionSet(args.root)
+    disable_signature_checks(rpm, ts)
+    set_optional_flags(rpm, ts, args)
+
+    try:
+        packages = load_rpm_headers(rpm, ts, paths)
+    except Exception as err:
+        emit_error("read-header", err)
+        return 1
+
+    total_packages = len(packages)
+    labels_by_path = {}
+    open_fds = {}
+
+    for path, header, label in packages:
+        labels_by_path[path] = label
+        try:
+            ts.addInstall(header, path, "u")
+        except Exception as err:
+            emit_error("add-install", label, err)
+            return 1
+
+    done = {"install": 0}
+    had_error = {"value": False}
+
+    def callback(reason, amount, total, key, client_data):
+        if reason == getattr(rpm, "RPMCALLBACK_INST_OPEN_FILE", -1):
+            try:
+                fd = os.open(key, os.O_RDONLY)
+            except OSError as err:
+                had_error["value"] = True
+                emit_error("open-file", key, err)
+                return -1
+
+            open_fds[key] = fd
+            return fd
+
+        if reason == getattr(rpm, "RPMCALLBACK_INST_CLOSE_FILE", -1):
+            fd = open_fds.pop(key, None)
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError as err:
+                    had_error["value"] = True
+                    emit_error("close-file", key, err)
+            return None
+
+        if reason == getattr(rpm, "RPMCALLBACK_INST_START", -1):
+            done["install"] += 1
+            emit_progress("install", done["install"], total_packages, labels_by_path.get(key, key))
+            return None
+
+        if reason == getattr(rpm, "RPMCALLBACK_SCRIPT_START", -1):
+            emit_progress("configure", done["install"], total_packages, labels_by_path.get(key, key))
+            return None
+
+        if reason == getattr(rpm, "RPMCALLBACK_VERIFY_PROGRESS", -1):
+            emit_progress("verify", done["install"], total_packages, "packages")
+            return None
+
+        if reason in (
+            getattr(rpm, "RPMCALLBACK_UNPACK_ERROR", -2),
+            getattr(rpm, "RPMCALLBACK_CPIO_ERROR", -3),
+            getattr(rpm, "RPMCALLBACK_SCRIPT_ERROR", -4),
+        ):
+            had_error["value"] = True
+            emit_error(labels_by_path.get(key, key), amount, total)
+            return None
+
+        return None
+
+    try:
+        problems = ts.run(callback, None)
+    except Exception as err:
+        emit_error("run-transaction", err)
+        return 1
+    finally:
+        close_open_fds(open_fds)
+
+    if problems:
+        for problem in problems:
+            emit("problem", problem)
+        return 1
+
+    if had_error["value"]:
+        emit_error("transaction", "rpm callback reported errors")
+        return 1
+
+    emit("done", "transaction")
+    return 0
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Install RPMs in one transaction and print stable progress events."
+    )
+    parser.add_argument("rpms", nargs="*", help="RPM package paths or glob patterns")
+    parser.add_argument("--root", default="/", help="RPM transaction root")
+    parser.add_argument("--replacepkgs", action="store_true", help="Allow replacing installed packages")
+    parser.add_argument("--nodeps", action="store_true", help="Do not verify dependencies")
+    parser.add_argument("--oldpackage", action="store_true", help="Allow replacing with older packages")
+    parser.add_argument("--self-test-events", action="store_true", help="Print sample events and exit")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    if args.self_test_events:
+        return run_self_test()
+
+    return run_transaction(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

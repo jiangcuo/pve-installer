@@ -13,6 +13,7 @@ use Proxmox::Install::RunEnv;
 
 use Proxmox::Install::Config;
 use Proxmox::Install::StorageConfig;
+use Proxmox::Install::Distro;
 
 use Proxmox::Sys::Block qw(get_cached_disks wipe_disk partition_bootable_disk);
 use Proxmox::Sys::Command qw(run_command syscmd);
@@ -133,35 +134,6 @@ sub create_filesystem {
 	}
 	return;
     });
-}
-
-sub debconfig_set {
-    my ($targetdir, $dcdata) = @_;
-
-    my $cfgfile = "/tmp/debconf.txt";
-    file_write_all("$targetdir/$cfgfile", $dcdata);
-    syscmd("chroot $targetdir debconf-set-selections $cfgfile");
-    unlink "$targetdir/$cfgfile";
-}
-
-sub diversion_add {
-    my ($targetdir, $cmd, $new_cmd) = @_;
-
-    syscmd("chroot $targetdir dpkg-divert --package proxmox --add --rename $cmd") == 0
-        || die "unable to exec dpkg-divert\n";
-
-    syscmd("ln -sf ${new_cmd} $targetdir/$cmd") == 0
-        || die "unable to link diversion to ${new_cmd}\n";
-}
-
-sub diversion_remove {
-    my  ($targetdir, $cmd) = @_;
-
-    syscmd("mv $targetdir/${cmd}.distrib $targetdir/${cmd};") == 0
-        || die "unable to remove $cmd diversion\n";
-
-    syscmd("chroot $targetdir dpkg-divert --remove $cmd") == 0
-        || die "unable to remove $cmd diversion\n";
 }
 
 sub btrfs_create {
@@ -654,10 +626,7 @@ sub rockchip_dtb_setup {
 sub prepare_proxmox_boot_esp {
     my ($espdev, $targetdir, $secureboot) = @_;
 
-    my $mode = '';
-
-    # if secure boot is enabled switch to grub-on-ESP
-    $mode = 'grub' if $secureboot;
+    my $mode = Proxmox::Install::Distro::proxmox_boot_mode($targetdir, $secureboot);
 
     syscmd("chroot $targetdir proxmox-boot-tool init $espdev $mode") == 0 ||
 	die "unable to init ESP and install proxmox-boot loader on '$espdev'\n";
@@ -673,17 +642,7 @@ sub prepare_grub_efi_boot_esp {
     my $rc;
     eval {
 	my $bootloader_id = ($arch eq "aarch64" && is_w510()) ? 'ubuntu' : 'lierfang';
-	if ($arch eq "aarch64"){
-		$rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target arm64-efi --no-floppy --bootloader-id='$bootloader_id' $dev");
-	} elsif ($arch eq "loongarch64"){
-		$rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target loongarch64-efi --no-floppy --bootloader-id='$bootloader_id' $dev");
-	} elsif ($arch eq "riscv64"){
-		$rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target riscv64-efi --no-floppy --bootloader-id='$bootloader_id' $dev");
-	} elsif ($arch eq "x86_64"){
-                $rc = syscmd("chroot $targetdir /usr/sbin/grub-install --target x86_64-efi --no-floppy --bootloader-id='$bootloader_id' $dev");
-        } else {
-		die "unable to install grub on arch $arch\n";
-	}
+	$rc = Proxmox::Install::Distro::grub_install_efi($targetdir, $dev, $arch, $bootloader_id);
 	if ($rc != 0) {
 	    my $run_env = Proxmox::Install::RunEnv::get();
 	    if ($run_env->{boot_type} eq 'efi') {
@@ -738,7 +697,12 @@ my sub setup_root_password {
 
     if (defined($plain)) {
 	my $octets = encode("utf-8", $plain);
-	run_command("chroot $targetdir /usr/sbin/chpasswd", undef, "root:$octets\n");
+	# Debian chpasswd goes through PAM; on openEuler/RPM, PAM in a chroot
+	# crashes (pam_chauthtok failure), so bypass PAM with --crypt-method.
+	my $cmd = Proxmox::Install::Distro::is_debian($targetdir)
+	    ? "chroot $targetdir /usr/sbin/chpasswd"
+	    : "chroot $targetdir /usr/sbin/chpasswd --crypt-method SHA512";
+	run_command($cmd, undef, "root:$octets\n");
     } elsif (defined($hashed)) {
 	my $octets = encode("utf-8", $hashed);
 	run_command("chroot $targetdir /usr/sbin/chpasswd --encrypted", undef, "root:$octets\n");
@@ -1160,6 +1124,9 @@ sub extract_data {
 	}
 
 	$ifaces .= "\n\nsource /etc/network/interfaces.d/*\n";
+	syscmd("mkdir -p $targetdir/etc/network/interfaces.d/") == 0 ||
+		die "unable to create:$targetdir/etc/network/interfaces.d/ $!\n";
+
 
 	file_write_all("$targetdir/etc/network/interfaces", $ifaces);
 
@@ -1234,14 +1201,7 @@ sub extract_data {
 	file_write_all("$targetdir/etc/fstab", $fstab);
 	file_write_all("$targetdir/etc/mtab", "");
 
-	syscmd("cp ${proxmox_libdir}/policy-disable-rc.d $targetdir/usr/sbin/policy-rc.d") == 0 ||
-		die "unable to copy policy-rc.d\n";
-	syscmd("cp ${proxmox_libdir}/fake-start-stop-daemon $targetdir/sbin/") == 0 ||
-		die "unable to copy start-stop-daemon\n";
-
-	diversion_add($targetdir, "/sbin/start-stop-daemon", "/sbin/fake-start-stop-daemon");
-	diversion_add($targetdir, "/usr/sbin/update-grub", "/bin/true");
-	diversion_add($targetdir, "/usr/sbin/update-initramfs", "/bin/true");
+	Proxmox::Install::Distro::prepare_chroot_env($targetdir, $proxmox_libdir);
 
 	my $machine_id = run_command("systemd-id128 new");
 	die "unable to create a new machine-id\n" if ! $machine_id;
@@ -1262,7 +1222,7 @@ sub extract_data {
 	# Note: keyboard-configuration/xbkb-keymap is used by console-setup
 	my $xkmap = $iso_env->{locales}->{kmap}->{$keymap}->{x11} // 'us';
 
-	debconfig_set ($targetdir, <<_EOD);
+	Proxmox::Install::Distro::debconfig_set($targetdir, <<_EOD);
 locales locales/default_environment_locale select en_US.UTF-8
 locales locales/locales_to_be_generated select en_US.UTF-8 UTF-8
 samba-common samba-common/dhcp boolean false
@@ -1274,45 +1234,28 @@ grub-pc grub-pc/install_devices select $grub_install_devices_txt
 grub-efi-amd64 grub2/force_efi_extra_removable boolean true
 _EOD
 
-	my $pkg_count = 0;
-	while (<${proxmox_pkgdir}/*.deb>) { $pkg_count++ };
-
-	# btrfs/dpkg is extremely slow without --force-unsafe-io
-	my $dpkg_opts = $use_btrfs ? "--force-unsafe-io" : "";
-
-	$count = 0;
-	while (<${proxmox_pkgdir}/*.deb>) {
-	    chomp;
-	    my $path = $_;
-	    my ($deb) = $path =~ m/${proxmox_pkgdir}\/(.*\.deb)/;
-
-	    # the grub-pc/grub-efi-amd64 packages (w/o -bin) are the ones actually updating grub
-	    # upon upgrade - and conflict with each other - install the fitting one only
-	    next if ($deb =~ /grub-pc_/ && $run_env->{boot_type} ne 'bios');
-	    next if ($deb =~ /grub-efi-amd64_/ && $run_env->{boot_type} ne 'efi');
-	    next if ($deb =~ /^proxmox-grub/ && $run_env->{boot_type} ne 'efi');
-	    next if ($deb =~ /^proxmox-secure-boot-support_/ && !$run_env->{secure_boot});
-	    next if ($deb =~ /^proxmox-first-boot/ && !Proxmox::Install::Config::get_first_boot_opt('enabled'));
-
-	    update_progress($count/$pkg_count, 0.5, 0.75, "extracting $deb");
-
-	    syscmd("chroot $targetdir dpkg $dpkg_opts --force-depends --no-triggers --unpack /tmp/pkg/$deb") == 0
-		|| die "installation of package $deb failed\n";
-	    update_progress((++$count)/$pkg_count, 0.5, 0.75);
-	}
-
-	# needed for postfix postinst in case no other NIC is active
-	syscmd("chroot $targetdir ifup lo");
-
-	my $cmd = "chroot $targetdir dpkg $dpkg_opts --force-confold --configure -a";
-	$count = 0;
-	run_command($cmd, sub {
-	    my $line = shift;
-	    if ($line =~ m/Setting up\s+(\S+)/) {
-		update_progress((++$count)/$pkg_count, 0.75, 0.95, "configuring $1");
-	    }
-	    return;
+	update_progress(0, 0.5, 0.75, "installing packages");
+	Proxmox::Install::Distro::pkg_install_all($targetdir, {
+	    pkgdir => $proxmox_pkgdir,
+	    use_btrfs => $use_btrfs,
+	    boot_type => $run_env->{boot_type},
+	    secure_boot => $run_env->{secure_boot},
+	    first_boot_enabled => Proxmox::Install::Config::get_first_boot_opt('enabled'),
+	    progress_cb => sub {
+		my ($msg, $done, $total) = @_;
+		if (defined $total && $total > 0) {
+		    update_progress($done / $total, 0.5, 0.95, $msg);
+		} else {
+		    update_progress(0.5, 0.5, 0.95, $msg);
+		}
+		return;
+	    },
 	});
+	update_progress(1, 0.5, 0.95);
+
+	# ifup is harmless if already up; useful on openEuler so postfix check
+	# below can reach a working loopback (Debian path already brought it up).
+	syscmd("chroot $targetdir ifup lo");
 
 	unlink "$targetdir/etc/mailname";
 	$postfix_main_cf =~ s/__FQDN__/${hostname}.${domain}/;
@@ -1335,15 +1278,8 @@ _EOD
 	symlink ("/usr/share/zoneinfo/$timezone", "$targetdir/etc/localtime");
 	file_write_all("$targetdir/etc/timezone", "$timezone\n");
 
-	# set apt mirror
-	if (my $mirror = $iso_env->{locales}->{country}->{$country}->{mirror}) {
-	    my $fn = "$targetdir/etc/apt/sources.list";
-	    syscmd("sed -i 's/ftp\\.debian\\.org/$mirror/' '$fn'");
-	}
-
-	# create extended_states for apt (avoid cron job warning if that
-	# file does not exist)
-	file_write_all("$targetdir/var/lib/apt/extended_states", '');
+	my $mirror = $iso_env->{locales}->{country}->{$country}->{mirror};
+	Proxmox::Install::Distro::write_repo($targetdir, $mirror);
 
 	# allow ssh root login
 	syscmd(['sed', '-i', 's/^#\?PermitRootLogin.*/PermitRootLogin yes/', "$targetdir/etc/ssh/sshd_config"]);
@@ -1367,7 +1303,7 @@ _EOD
 	if ($iso_env->{product} eq 'pve'|| $iso_env->{product} eq 'pxvirt') {
 	    # save installer settings
 	    my $ucc = uc ($country);
-	    debconfig_set($targetdir, "pve-manager pve-manager/country string $ucc\n");
+	    Proxmox::Install::Distro::debconfig_set($targetdir, "pve-manager pve-manager/country string $ucc\n");
 
 	    # do run a potentially unconfigured/unisolated network accessible routing daemon
 	    unlink "$targetdir/etc/systemd/system/multi-user.target.wants/frr.service"
@@ -1389,13 +1325,22 @@ _EOD
 		$target_cmdline_snippet .= "GRUB_SERIAL_COMMAND=\"serial --unit=$1 --speed=$2\"\n";
 	    }
 	    $target_cmdline_snippet .= "GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $target_cmdline\"";
-	    file_write_all("$targetdir/etc/default/grub.d/installer.cfg", $target_cmdline_snippet);
+	    Proxmox::Install::Distro::append_grub_default(
+		$targetdir, 'installer.cfg', $target_cmdline_snippet);
+	}
+
+	if (!Proxmox::Install::Distro::is_debian($targetdir) && !$use_zfs && !$use_btrfs) {
+	    Proxmox::Install::Distro::set_grub_cmdline(
+		$targetdir, 'lvm.cfg',
+		"rd.lvm.lv=$iso_env->{product}/root",
+	    );
 	}
 
 	if ($use_zfs) {
 	    # add ZFS options while preserving existing kernel cmdline
-	    my $zfs_snippet = "GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX root=ZFS=$zfs_pool_name/ROOT/$zfs_root_volume_name boot=zfs\"";
-	    file_write_all("$targetdir/etc/default/grub.d/zfs.cfg", $zfs_snippet);
+	    Proxmox::Install::Distro::set_grub_cmdline(
+		$targetdir, 'zfs.cfg',
+		"root=ZFS=$zfs_pool_name/ROOT/$zfs_root_volume_name boot=zfs");
 
 	    file_write_all("$targetdir/etc/kernel/cmdline", "root=ZFS=$zfs_pool_name/ROOT/$zfs_root_volume_name boot=zfs $target_cmdline\n");
 	}
@@ -1410,8 +1355,9 @@ _EOD
 	# separate zfs pool is created afterwards.
 	zfs_setup_module_conf($targetdir);
 
-	diversion_remove($targetdir, "/usr/sbin/update-grub");
-	diversion_remove($targetdir, "/usr/sbin/update-initramfs");
+	# undo update-grub / update-initramfs diversions so the real binaries
+	# run once below (no-op on openEuler).
+	Proxmox::Install::Distro::remove_boot_diversions($targetdir);
 
 	my $arch = get_host_arch();
 	if (!is_test_mode()) {
@@ -1422,8 +1368,7 @@ _EOD
 
 	    my $bootloader_err_list = [];
 	    eval {
-		syscmd("chroot $targetdir /usr/sbin/update-initramfs -c -k all") == 0 ||
-		    die "unable to install initramfs\n";
+		Proxmox::Install::Distro::mkinitramfs($targetdir);
 
 		my $native_4k_disk_bootable = 0;
 		foreach my $di (@$bootdevinfo) {
@@ -1438,7 +1383,7 @@ _EOD
 			if (!$native_4k_disk_bootable) {
 			    eval {
 				if ($arch eq 'x86_64'){
-					syscmd("chroot $targetdir /usr/sbin/grub-install --target i386-pc --no-floppy --bootloader-id='proxmox' $dev") 
+					Proxmox::Install::Distro::grub_install_bios($targetdir, $dev);
 				}
 			    };
 			    push @$bootloader_err_list, $@ if $@;
@@ -1451,8 +1396,7 @@ _EOD
 		    }
 		}
 
-		syscmd("chroot $targetdir /usr/sbin/update-grub") == 0 ||
-		    die "unable to update boot loader config\n";
+		Proxmox::Install::Distro::grub_mkconfig($targetdir);
 	    };
 	    push @$bootloader_err_list, $@ if $@;
 
@@ -1467,9 +1411,7 @@ _EOD
 
 	# cleanup
 
-	unlink "$targetdir/usr/sbin/policy-rc.d";
-
-	diversion_remove($targetdir, "/sbin/start-stop-daemon");
+	Proxmox::Install::Distro::cleanup_chroot_env($targetdir);
 
 	setup_root_password($targetdir);
 
@@ -1511,7 +1453,7 @@ _EOD
 		$storage_cfg = Proxmox::Install::StorageConfig::get_local_config();
 	    }
 	    file_write_all("$tmpdir/storage.cfg", $storage_cfg);
-
+		run_command("mkdir -p $targetdir/tmp/pve $targetdir/var/lib/pve-cluster/");
 	    run_command("chroot $targetdir /usr/bin/create_pmxcfs_db /tmp/pve /var/lib/pve-cluster/config.db");
 
 	    syscmd("rm -rf $tmpdir");
@@ -1553,7 +1495,7 @@ _EOD
 	my $elapsed = Time::HiRes::tv_interval($starttime);
 	print STDERR "Elapsed extract time: $elapsed\n";
 
-	syscmd("chroot $targetdir /usr/bin/dpkg-query -W --showformat='\${package}\n'> final.pkglist");
+	Proxmox::Install::Distro::list_installed($targetdir, 'final.pkglist');
     }
 
     syscmd("umount $targetdir/run");
